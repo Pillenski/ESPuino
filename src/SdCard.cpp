@@ -325,6 +325,46 @@ std::optional<Playlist *> SdCard_ReturnPlaylist(const char *fileName, const uint
 		return playlist;
 	}
 
+	// Directory-recusion mode
+    if (_playMode == ALL_TRACKS_OF_ALL_SUBDIRS_SORTED || _playMode == ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM) {
+		playlist->reserve(64);
+		size_t hiddenFiles = 0;
+        // helper lambda to recurse into subdirs
+        std::function<bool(const String&)> scanDir = [&](const String &dirPath) {
+            File dir = gFSystem.open(dirPath);
+            if (!dir || !dir.isDirectory()) {
+                Log_Printf(LOGLEVEL_ERROR, "Cannot open directory %s", dirPath.c_str());
+                return false;
+            }
+            while (true) {
+                bool isDir;
+                String name = dir.getNextFileName(&isDir);
+                if (name.isEmpty()) break;
+                if (isDir) {
+                    if (!scanDir(name)) return false;
+                } else if (fileValid(name.c_str())) {
+                    if (!SdCard_allocAndSave(playlist, name)) {
+                        freePlaylist(playlist);
+                        return false;
+                    }
+                }
+				else {
+					hiddenFiles++;
+				}
+            }
+            return true;
+        };
+        if (!scanDir(fileName)) {
+            // error already logged inside scanDir
+            return std::nullopt;
+        }
+        playlist->shrink_to_fit();
+
+		Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
+		Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
+        return playlist;
+    }
+
 	// Directory-mode (linear-playlist)
 	playlist->reserve(64); // reserve a sane amount of memory to reduce the number of reallocs
 	size_t hiddenFiles = 0;
