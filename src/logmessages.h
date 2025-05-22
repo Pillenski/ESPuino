@@ -71,6 +71,8 @@ extern const char modeAllTrackAlphSorted[];
 extern const char modeAllTrackRandom[];
 extern const char modeAllTrackAlphSortedLoop[];
 extern const char modeAllTrackRandomLoop[];
+extern const char modeAllTrackRecursive[];
+extern const char modeAllTrackRecursiveRandom[];
 extern const char modeWebstream[];
 extern const char modeWebstreamM3u[];
 extern const char webstreamNotAvailable[];
