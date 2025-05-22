@@ -1138,6 +1138,18 @@ void AudioPlayer_TrackQueueDispatcher(const char *_itemToPlay, const uint32_t _l
 			break;
 		}
 
+		case ALL_TRACKS_OF_ALL_SUBDIRS_SORTED: {
+            Log_Printf(LOGLEVEL_NOTICE, modeAllTrackRecursive, folderPath.c_str());
+            AudioPlayer_SortPlaylist(list);
+            break;
+        }
+
+        case ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM: {
+            Log_Printf(LOGLEVEL_NOTICE, modeAllTrackRecursiveRandom, folderPath.c_str());
+            AudioPlayer_RandomizePlaylist(list);
+            break;
+        }
+
 		case WEBSTREAM: { // This is always just one "track"
 			Log_Println(modeWebstream, LOGLEVEL_NOTICE);
 			if (!Wlan_IsConnected()) {
