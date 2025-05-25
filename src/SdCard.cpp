@@ -311,11 +311,11 @@ static std::optional<Playlist *> SdCard_ParseM3UPlaylist(File f, bool forceExten
 	First element of array always contains the number of payload-items. */
 std::optional<Playlist *> SdCard_ReturnPlaylist(const char *fileName, const uint32_t _playMode) {
 	// Look if file/folder requested really exists. If not => break.
-	File fileOrDirectory = gFSystem.open(fileName);
-	if (!fileOrDirectory) {
-		Log_Printf(LOGLEVEL_ERROR, dirOrFileDoesNotExist, fileName);
-		return std::nullopt;
-	}
+    File fileOrDirectory = gFSystem.open(fileName);
+    if (!fileOrDirectory) {
+        Log_Printf(LOGLEVEL_ERROR, dirOrFileDoesNotExist, fileName);
+        return std::nullopt;
+    }
 
 	Log_Printf(LOGLEVEL_DEBUG, freeMemory, ESP.getFreeHeap());
 
@@ -329,83 +329,55 @@ std::optional<Playlist *> SdCard_ReturnPlaylist(const char *fileName, const uint
 
 	// if we reach here, this was not a m3u
 	Log_Println(playlistGen, LOGLEVEL_NOTICE);
-	Playlist *playlist = new Playlist;
+    Playlist *playlist = new Playlist;
 
-	// File-mode
-	if (!fileOrDirectory.isDirectory()) {
+    bool recurse   = (_playMode == ALL_TRACKS_OF_ALL_SUBDIRS_SORTED || _playMode == ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM);
+    size_t hiddenFiles = 0;
+
+    // (recursive) directory scanning function 
+    std::function<bool(const String&)> scanDir = [&](const String &dirPath) {
+        File dir = gFSystem.open(dirPath);
+        if (!dir || !dir.isDirectory()) {
+            Log_Printf(LOGLEVEL_ERROR, "Cannot open directory %s", dirPath.c_str());
+            return false;
+        }
+        while (true) {
+            bool isDir;
+            String name = dir.getNextFileName(&isDir);
+            if (name.isEmpty()) break;
+            if (isDir) {
+                if (recurse && !scanDir(name)) return false;
+            } else if (fileValid(name.c_str())) {
+				if (!SdCard_allocAndSave(playlist, name)) {
+					// OOM, function already took care of house cleaning
+					return false;
+				}
+            } else {
+                hiddenFiles++;
+            }
+        }
+        return true;
+    };
+
+    // File-mode
+    if (!fileOrDirectory.isDirectory()) {
 		if (!SdCard_allocAndSave(playlist, fileOrDirectory.path())) {
 			// OOM, function already took care of house cleaning
 			return std::nullopt;
 		}
-		return playlist;
-	}
-
-	// Directory-recusion mode
-    if (_playMode == ALL_TRACKS_OF_ALL_SUBDIRS_SORTED || _playMode == ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM) {
-		playlist->reserve(64);
-		size_t hiddenFiles = 0;
-        // helper lambda to recurse into subdirs
-        std::function<bool(const String&)> scanDir = [&](const String &dirPath) {
-            File dir = gFSystem.open(dirPath);
-            if (!dir || !dir.isDirectory()) {
-                Log_Printf(LOGLEVEL_ERROR, "Cannot open directory %s", dirPath.c_str());
-                return false;
-            }
-            while (true) {
-                bool isDir;
-                String name = dir.getNextFileName(&isDir);
-                if (name.isEmpty()) break;
-                if (isDir) {
-                    if (!scanDir(name)) return false;
-                } else if (fileValid(name.c_str())) {
-                    if (!SdCard_allocAndSave(playlist, name)) {
-                        freePlaylist(playlist);
-                        return false;
-                    }
-                }
-				else {
-					hiddenFiles++;
-				}
-            }
-            return true;
-        };
+    } 
+	// Directory-mode (linear-playlist)
+	else {
+		playlist->reserve(64); // reserve a sane amount of memory to reduce the number of reallocs
         if (!scanDir(fileName)) {
-            // error already logged inside scanDir
-            return std::nullopt;
+            // OOM, function already took care of house cleaning
+			return std::nullopt;
         }
-        playlist->shrink_to_fit();
-
-		Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
-		Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
-        return playlist;
     }
 
-	// Directory-mode (linear-playlist)
-	playlist->reserve(64); // reserve a sane amount of memory to reduce the number of reallocs
-	size_t hiddenFiles = 0;
-	while (true) {
-		bool isDir;
-		const String name = fileOrDirectory.getNextFileName(&isDir);
-		if (name.isEmpty()) {
-			break;
-		}
-		if (isDir) {
-			continue;
-		}
-		// Don't support filenames that start with "." and only allow .mp3 and other supported audio file formats
-		if (fileValid(name.c_str())) {
-			// save it to the vector
-			if (!SdCard_allocAndSave(playlist, name)) {
-				// OOM, function already took care of house cleaning
-				return std::nullopt;
-			}
-		} else {
-			hiddenFiles++;
-		}
-	}
-	playlist->shrink_to_fit();
+    playlist->shrink_to_fit();
 
-	Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
-	Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
-	return playlist;
+    Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
+    Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
+    return playlist;
 }
