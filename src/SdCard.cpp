@@ -296,11 +296,11 @@ static std::optional<Playlist *> SdCard_ParseM3UPlaylist(File file) {
 	First element of array always contains the number of payload-items. */
 std::optional<Playlist *> SdCard_ReturnPlaylist(const char *fileName, const uint32_t _playMode) {
 	// Look if file/folder requested really exists. If not => break.
-    File fileOrDirectory = gFSystem.open(fileName);
-    if (!fileOrDirectory) {
-        Log_Printf(LOGLEVEL_ERROR, dirOrFileDoesNotExist, fileName);
-        return std::nullopt;
-    }
+	File fileOrDirectory = gFSystem.open(fileName);
+	if (!fileOrDirectory) {
+		Log_Printf(LOGLEVEL_ERROR, dirOrFileDoesNotExist, fileName);
+		return std::nullopt;
+	}
 
 	Log_Printf(LOGLEVEL_DEBUG, freeMemory, ESP.getFreeHeap());
 
@@ -314,55 +314,59 @@ std::optional<Playlist *> SdCard_ReturnPlaylist(const char *fileName, const uint
 
 	// if we reach here, this was not a m3u
 	Log_Println(playlistGen, LOGLEVEL_NOTICE);
-    Playlist *playlist = new Playlist;
+	Playlist *playlist = new Playlist;
 
-    bool recurse   = (_playMode == ALL_TRACKS_OF_ALL_SUBDIRS_SORTED || _playMode == ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM);
-    size_t hiddenFiles = 0;
+	bool recurse = (_playMode == ALL_TRACKS_OF_ALL_SUBDIRS_SORTED || _playMode == ALL_TRACKS_OF_ALL_SUBDIRS_RANDOM);
+	size_t hiddenFiles = 0;
 
-    // (recursive) directory scanning function 
-    std::function<bool(const String&)> scanDir = [&](const String &dirPath) {
-        File dir = gFSystem.open(dirPath);
-        if (!dir || !dir.isDirectory()) {
-            Log_Printf(LOGLEVEL_ERROR, "Cannot open directory %s", dirPath.c_str());
-            return false;
-        }
-        while (true) {
-            bool isDir;
-            String name = dir.getNextFileName(&isDir);
-            if (name.isEmpty()) break;
-            if (isDir) {
-                if (recurse && !scanDir(name)) return false;
-            } else if (fileValid(name.c_str())) {
+	// (recursive) directory scanning function
+	std::function<bool(const String &)> scanDir = [&](const String &dirPath) {
+		File dir = gFSystem.open(dirPath);
+		if (!dir || !dir.isDirectory()) {
+			Log_Printf(LOGLEVEL_ERROR, "Cannot open directory %s", dirPath.c_str());
+			return false;
+		}
+		while (true) {
+			bool isDir;
+			String name = dir.getNextFileName(&isDir);
+			if (name.isEmpty()) {
+				break;
+			}
+			if (isDir) {
+				if (recurse && !scanDir(name)) {
+					return false;
+				}
+			} else if (fileValid(name.c_str())) {
 				if (!SdCard_allocAndSave(playlist, name)) {
 					// OOM, function already took care of house cleaning
 					return false;
 				}
-            } else {
-                hiddenFiles++;
-            }
-        }
-        return true;
-    };
+			} else {
+				hiddenFiles++;
+			}
+		}
+		return true;
+	};
 
-    // File-mode
-    if (!fileOrDirectory.isDirectory()) {
+	// File-mode
+	if (!fileOrDirectory.isDirectory()) {
 		if (!SdCard_allocAndSave(playlist, fileOrDirectory.path())) {
 			// OOM, function already took care of house cleaning
 			return std::nullopt;
 		}
-    } 
+	}
 	// Directory-mode (linear-playlist)
 	else {
 		playlist->reserve(64); // reserve a sane amount of memory to reduce the number of reallocs
-        if (!scanDir(fileName)) {
-            // OOM, function already took care of house cleaning
+		if (!scanDir(fileName)) {
+			// OOM, function already took care of house cleaning
 			return std::nullopt;
-        }
-    }
+		}
+	}
 
-    playlist->shrink_to_fit();
+	playlist->shrink_to_fit();
 
-    Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
-    Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
-    return playlist;
+	Log_Printf(LOGLEVEL_NOTICE, numberOfValidFiles, playlist->size());
+	Log_Printf(LOGLEVEL_DEBUG, "Hidden files: %u", hiddenFiles);
+	return playlist;
 }
