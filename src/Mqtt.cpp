@@ -14,12 +14,6 @@
 
 #include <Rfid.h>
 #include <WiFi.h>
-
-#ifdef MQTT_ENABLE
-	#define MQTT_SOCKET_TIMEOUT 1 // https://github.com/knolleary/pubsubclient/issues/403
-	#include <PubSubClient.h>
-#endif
-
 #include <charconv>
 #include <limits>
 #include <string_view>
@@ -27,13 +21,65 @@
 // MQTT-helper
 #ifdef MQTT_ENABLE
 static WiFiClient Mqtt_WifiClient;
-static PubSubClient Mqtt_PubSubClient(Mqtt_WifiClient);
+
+// NOTE: ESP‑MQTT is asynchronous. We keep the public wrapper API unchanged
+// and translate the calls to the ESP‑MQTT client underneath.
+
+static esp_mqtt_client_handle_t sMqttClient = nullptr;
+static bool sMqttReady = false;
+
 // Please note: all of them are defaults that can be changed later via GUI
-String gMqttClientId = DEVICE_HOSTNAME; // ClientId for the MQTT-server, must be server wide unique (if not found in NVS this one will be taken)
-String gMqttServer = "192.168.2.43"; // IP-address of MQTT-server (if not found in NVS this one will be taken)
-String gMqttUser = "mqtt-user"; // MQTT-user
-String gMqttPassword = "mqtt-password"; // MQTT-password
-uint16_t gMqttPort = 1883; // MQTT-Port
+String gMqttClientId = DEVICE_HOSTNAME; // globally unique client‑id
+String gMqttServer = "192.168.2.43"; // default broker IP
+String gMqttUser = "mqtt-user"; // user name
+String gMqttPassword = "mqtt-password"; // password
+uint16_t gMqttPort = 1883; // broker port
+
+// Forward declaration
+static void Mqtt_ClientCallback(const char *topic, const uint8_t *payload, uint32_t length);
+static bool Mqtt_Reconnect(void);
+static void Mqtt_PostWiFiRssi(void);
+
+// Helper: translate ESP‑MQTT event to the legacy callback
+static void mqtt_event_handler(void * /*handler_args*/,
+	esp_event_base_t /*base*/,
+	int32_t event_id,
+	void *event_data) {
+	if (!sMqttReady) {
+		return;
+	}
+
+	esp_mqtt_event_handle_t event = static_cast<esp_mqtt_event_handle_t>(event_data);
+	switch (event_id) {
+		case MQTT_EVENT_DATA:
+			if (event->current_data_offset == 0) { // first (and usually only) frame
+				Mqtt_ClientCallback(event->topic,
+					reinterpret_cast<const uint8_t *>(event->data),
+					static_cast<uint32_t>(event->data_len));
+			}
+			break;
+
+		case MQTT_EVENT_DISCONNECTED:
+			sMqttReady = false;
+		case MQTT_EVENT_ERROR:
+			// TODO: print error information from event_data
+			Log_Printf(LOGLEVEL_ERROR, "%s", "MQTT_EVENT_ERROR");
+			break;
+
+		case MQTT_EVENT_CONNECTED:
+			sMqttReady = true;
+			// (Re‑)subscribe to all topics that the original PubSubClient subscribed to
+			// Re‑enable LWT etc.  Because the list of topics is maintained inside ESPuino
+			//    settings we simply call the legacy reconnect routine to do the house‑keeping.
+			Mqtt_Reconnect();
+			break;
+
+		default:
+			break;
+	}
+	return;
+}
+
 #endif
 
 // MQTT
@@ -115,8 +161,25 @@ void Mqtt_Init() {
 
 	// Only enable MQTT if requested
 	if (Mqtt_Enabled) {
-		Mqtt_PubSubClient.setServer(gMqttServer.c_str(), gMqttPort);
-		Mqtt_PubSubClient.setCallback(Mqtt_ClientCallback);
+		std::string uri = "mqtt://" + std::string(gMqttServer.c_str()) + ":" + std::to_string(gMqttPort);
+
+		esp_mqtt_client_config_t cfg = {};
+		cfg.uri = uri.c_str();
+		cfg.username = gMqttUser.c_str();
+		cfg.password = gMqttPassword.c_str();
+		cfg.client_id = gMqttClientId.c_str();
+		cfg.keepalive = 30;
+		// cfg.disable_clean_session = false;
+
+		sMqttClient = esp_mqtt_client_init(&cfg);
+		ESP_ERROR_CHECK(esp_mqtt_client_register_event(sMqttClient,
+			(esp_mqtt_event_id_t) ESP_EVENT_ANY_ID,
+			mqtt_event_handler,
+			nullptr));
+		esp_mqtt_client_start(sMqttClient);
+
+		// Wait a little so that the first connection attempt has a chance
+		vTaskDelay(pdMS_TO_TICKS(50));
 	}
 #else
 	Mqtt_Enabled = false;
@@ -126,8 +189,9 @@ void Mqtt_Init() {
 void Mqtt_Cyclic(void) {
 #ifdef MQTT_ENABLE
 	if (Mqtt_Enabled && Wlan_IsConnected()) {
+		// The ESP‑MQTT client handles keep‑alive internally but we still
+		// try to reconnect quickly if we lost the connection.
 		Mqtt_Reconnect();
-		Mqtt_PubSubClient.loop();
 		Mqtt_PostWiFiRssi();
 	}
 #endif
@@ -135,10 +199,15 @@ void Mqtt_Cyclic(void) {
 
 void Mqtt_Exit(void) {
 #ifdef MQTT_ENABLE
-	Log_Println("shutdown MQTT..", LOGLEVEL_NOTICE);
+	Log_Println("Shutting down MQTT…", LOGLEVEL_NOTICE);
 	publishMqtt(topicState, "Offline", false);
 	publishMqtt(topicTrackState, "---", false);
-	Mqtt_PubSubClient.disconnect();
+
+	if (sMqttClient) {
+		esp_mqtt_client_stop(sMqttClient);
+		esp_mqtt_client_destroy(sMqttClient);
+		sMqttClient = nullptr;
+	}
 #endif
 }
 
@@ -149,12 +218,9 @@ bool Mqtt_IsEnabled(void) {
 /* Wrapper-functions for MQTT-publish */
 bool publishMqtt(const char *topic, const char *payload, bool retained) {
 #ifdef MQTT_ENABLE
-	if (strcmp(topic, "") != 0) {
-		if (Mqtt_PubSubClient.connected()) {
-			Mqtt_PubSubClient.publish(topic, payload, retained);
-			// delay(100);
-			return true;
-		}
+	if (topic && *topic && sMqttClient && sMqttReady) {
+		int msgId = esp_mqtt_client_publish(sMqttClient, topic, payload, 0 /*length = auto*/, 0 /*QoS*/, retained);
+		return msgId != -1;
 	}
 #endif
 
@@ -208,8 +274,15 @@ void Mqtt_PostWiFiRssi(void) {
 */
 bool Mqtt_Reconnect() {
 #ifdef MQTT_ENABLE
+	if (!sMqttClient) {
+		return false;
+	}
+
+	if (sMqttReady) {
+		return true;
+	}
+
 	static uint32_t mqttLastRetryTimestamp = 0u;
-	uint8_t connect = false;
 	uint8_t i = 0;
 
 	if (!mqttLastRetryTimestamp || millis() - mqttLastRetryTimestamp >= mqttRetryInterval * 1000) {
@@ -218,70 +291,54 @@ bool Mqtt_Reconnect() {
 		return false;
 	}
 
-	while (!Mqtt_PubSubClient.connected() && i < mqttMaxRetriesPerInterval) {
-		i++;
-		Log_Printf(LOGLEVEL_NOTICE, tryConnectMqttS, gMqttServer.c_str());
+	esp_err_t err = esp_mqtt_client_reconnect(sMqttClient);
+	if (err == ESP_OK) {
+		Log_Println(mqttOk, LOGLEVEL_NOTICE);
 
-		// Try to connect to MQTT-server. If username AND password are set, they'll be used
-		if ((gMqttUser.length() < 1u) || (gMqttPassword.length()) < 1u) {
-			Log_Println(mqttWithoutPwd, LOGLEVEL_NOTICE);
-			if (Mqtt_PubSubClient.connect(gMqttClientId.c_str())) {
-				connect = true;
-			}
-		} else {
-			Log_Println(mqttWithPwd, LOGLEVEL_NOTICE);
-			if (Mqtt_PubSubClient.connect(gMqttClientId.c_str(), gMqttUser.c_str(), gMqttPassword.c_str(), topicState, 0, false, "Offline")) {
-				connect = true;
-			}
-		}
-		if (connect) {
-			Log_Println(mqttOk, LOGLEVEL_NOTICE);
+		// Deepsleep-subscription
+		esp_mqtt_client_subscribe(sMqttClient, topicSleepCmnd, 0);
 
-			// Deepsleep-subscription
-			Mqtt_PubSubClient.subscribe(topicSleepCmnd);
+		// RFID-Tag-ID-subscription
+		esp_mqtt_client_subscribe(sMqttClient, topicRfidCmnd, 0);
 
-			// RFID-Tag-ID-subscription
-			Mqtt_PubSubClient.subscribe(topicRfidCmnd);
+		// Loudness-subscription
+		esp_mqtt_client_subscribe(sMqttClient, topicLoudnessCmnd, 0);
 
-			// Loudness-subscription
-			Mqtt_PubSubClient.subscribe(topicLoudnessCmnd);
+		// Sleep-Timer-subscription
+		esp_mqtt_client_subscribe(sMqttClient, topicSleepTimerCmnd, 0);
 
-			// Sleep-Timer-subscription
-			Mqtt_PubSubClient.subscribe(topicSleepTimerCmnd);
+		// Next/previous/stop/play-track-subscription
+		esp_mqtt_client_subscribe(sMqttClient, topicTrackControlCmnd, 0);
 
-			// Next/previous/stop/play-track-subscription
-			Mqtt_PubSubClient.subscribe(topicTrackControlCmnd);
+		// Lock controls
+		esp_mqtt_client_subscribe(sMqttClient, topicLockControlsCmnd, 0);
 
-			// Lock controls
-			Mqtt_PubSubClient.subscribe(topicLockControlsCmnd);
+		// Current repeat-Mode
+		esp_mqtt_client_subscribe(sMqttClient, topicRepeatModeCmnd, 0);
 
-			// Current repeat-Mode
-			Mqtt_PubSubClient.subscribe(topicRepeatModeCmnd);
+		// LED-brightness
+		esp_mqtt_client_subscribe(sMqttClient, topicLedBrightnessCmnd, 0);
 
-			// LED-brightness
-			Mqtt_PubSubClient.subscribe(topicLedBrightnessCmnd);
+		// Publish current state
+		publishMqtt(topicState, "Online", false);
+		publishMqtt(topicTrackState, gPlayProperties.title, false);
+		publishMqtt(topicCoverChangedState, "", false);
+		publishMqtt(topicLoudnessState, AudioPlayer_GetCurrentVolume(), false);
+		publishMqtt(topicSleepTimerState, System_GetSleepTimerTimeStamp(), false);
+		publishMqtt(topicLockControlsState, System_AreControlsLocked(), false);
+		publishMqtt(topicPlaymodeState, gPlayProperties.playMode, false);
+		publishMqtt(topicLedBrightnessState, Led_GetBrightness(), false);
+		publishMqtt(topicCurrentIPv4IP, Wlan_GetIpAddress().c_str(), false);
+		publishMqtt(topicRepeatModeState, AudioPlayer_GetRepeatMode(), false);
 
-			// Publish current state
-			publishMqtt(topicState, "Online", false);
-			publishMqtt(topicTrackState, gPlayProperties.title, false);
-			publishMqtt(topicCoverChangedState, "", false);
-			publishMqtt(topicLoudnessState, AudioPlayer_GetCurrentVolume(), false);
-			publishMqtt(topicSleepTimerState, System_GetSleepTimerTimeStamp(), false);
-			publishMqtt(topicLockControlsState, System_AreControlsLocked(), false);
-			publishMqtt(topicPlaymodeState, gPlayProperties.playMode, false);
-			publishMqtt(topicLedBrightnessState, Led_GetBrightness(), false);
-			publishMqtt(topicCurrentIPv4IP, Wlan_GetIpAddress().c_str(), false);
-			publishMqtt(topicRepeatModeState, AudioPlayer_GetRepeatMode(), false);
+		char revBuf[12];
+		strncpy(revBuf, softwareRevision + 19, sizeof(revBuf) - 1);
+		revBuf[sizeof(revBuf) - 1] = '\0';
+		publishMqtt(topicSRevisionState, revBuf, false);
 
-			char revBuf[12];
-			strncpy(revBuf, softwareRevision + 19, sizeof(revBuf) - 1);
-			revBuf[sizeof(revBuf) - 1] = '\0';
-			publishMqtt(topicSRevisionState, revBuf, false);
-
-			return Mqtt_PubSubClient.connected();
-		} else {
-			Log_Printf(LOGLEVEL_ERROR, mqttConnFailed, Mqtt_PubSubClient.state(), i, mqttMaxRetriesPerInterval);
-		}
+		return sMqttReady;
+	} else {
+		Log_Printf(LOGLEVEL_ERROR, mqttConnFailed, err, i, mqttMaxRetriesPerInterval);
 	}
 	return false;
 #else
