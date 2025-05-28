@@ -80,3 +80,5 @@ time_t AudioPlayer_GetPlayTimeAllTime(void);
 uint32_t AudioPlayer_GetCurrentTime(void);
 uint32_t AudioPlayer_GetFileDuration(void);
 String AudioPlayer_GetStationLogoUrl(void);
+void AudioPlayer_ClearCover(void);
+size_t AudioPlayer_NvsRfidWriteWrapper(const char *_rfidCardId, const char *_track, const uint32_t _playPosition, const uint8_t _playMode, const uint16_t _trackLastPlayed, const uint16_t _numberOfTracks);
