@@ -36,7 +36,7 @@ void Port_Test(void);
 	#if (PE_INTERRUPT_PIN >= 0 && PE_INTERRUPT_PIN <= MAX_GPIO)
 		#define PE_INTERRUPT_PIN_ENABLE
 void IRAM_ATTR PORT_ExpanderISR(void);
-bool Port_AllowReadFromPortExpander = false;
+volatile bool Port_AllowReadFromPortExpander = false;
 	#endif
 #endif
 
@@ -53,7 +53,9 @@ void Port_Init(void) {
 #endif
 
 #ifdef PORT_EXPANDER_ENABLE
+#ifdef PE_INTERRUPT_PIN_ENABLE
 	Port_AllowReadFromPortExpander = true;
+#endif
 	Port_ExpanderHandler();
 #endif
 }
@@ -192,9 +194,11 @@ void Port_WriteInitMaskForOutputChannels(void) {
 	#endif
 
 	// init status cache with values from HW
+#ifdef PORT_EXPANDER_TYPE_PCA9555
 	i2cBusTwo.beginTransmission(expanderI2cAddress);
 	i2cBusTwo.write(0x02); // Pointer to first output-register
 	i2cBusTwo.endTransmission(false);
+#endif
 	i2cBusTwo.requestFrom(expanderI2cAddress, static_cast<size_t>(PORT_EXPANDER_PORT_COUNT), true); // ...and read the contents
 	if (i2cBusTwo.available() == PORT_EXPANDER_PORT_COUNT) {
 		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
@@ -236,15 +240,17 @@ void Port_WriteInitMaskForOutputChannels(void) {
 	}
 	#endif
 
+	#ifdef PORT_EXPANDER_TYPE_PCF8574
+		Port_ExpanderPortsOutputChannelStatus[0] = portBaseValueBitMask & OutputBitMaskInOutAsPerPort[0];
+		i2cBusTwo.beginTransmission(expanderI2cAddress);
+		i2cBusTwo.write(Port_ExpanderPortsOutputChannelStatus[0]);
+		i2cBusTwo.endTransmission();
+		Log_Printf(LOGLEVEL_DEBUG, "Port_ExpanderHandler init: %u", Port_ExpanderPortsOutputChannelStatus[0]);
+	#else
 	// Only change port-config if necessary (at least bitmask changed from base-default for one port)
 	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || ((PORT_EXPANDER_PORT_COUNT == 2) && (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask))) {
 		// all outputs to LOW
 		Port_ExpanderPortsOutputChannelStatus[0] &= OutputBitMaskInOutAsPerPort[0];
-	#ifdef PORT_EXPANDER_TYPE_PCF8574
-		i2cBusTwo.beginTransmission(expanderI2cAddress);
-		i2cBusTwo.write(Port_ExpanderPortsOutputChannelStatus[0]);
-		i2cBusTwo.endTransmission();
-	#else
 		Port_ExpanderPortsOutputChannelStatus[1] &= OutputBitMaskInOutAsPerPort[1];
 
 		i2cBusTwo.beginTransmission(expanderI2cAddress);
@@ -261,8 +267,8 @@ void Port_WriteInitMaskForOutputChannels(void) {
 		i2cBusTwo.write(0x02); // Pointer to configuration of output-channels (high/low)
 		i2cBusTwo.write(Port_ExpanderPortsOutputChannelStatus, static_cast<size_t>(portsToWrite));
 		i2cBusTwo.endTransmission();
-	#endif
 	}
+	#endif
 }
 
 // Some channels are configured as output before shutdown in order to avoid unwanted interrupts while ESP32 sleeps
@@ -382,6 +388,9 @@ void Port_ExpanderHandler(void) {
 	i2cBusTwo.requestFrom(expanderI2cAddress, 2u); // ...and read its bytes
 	#endif
 
+#ifdef PORT_EXPANDER_TYPE_PCF8574
+    i2cBusTwo.requestFrom(expanderI2cAddress, static_cast<size_t>(PORT_EXPANDER_PORT_COUNT));
+#endif
 	if (i2cBusTwo.available() == PORT_EXPANDER_PORT_COUNT) {
 		uint32_t inputCurr = 0;
 		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
