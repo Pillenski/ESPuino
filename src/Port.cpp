@@ -17,6 +17,13 @@
 // 115 => port 1 channel/bit 7
 
 #ifdef PORT_EXPANDER_ENABLE
+
+	#ifdef PORT_EXPANDER_TYPE_PCF8574
+		#define PORT_EXPANDER_PORT_COUNT 1
+	#else
+		#define PORT_EXPANDER_PORT_COUNT 2
+	#endif
+
 extern TwoWire i2cBusTwo;
 
 uint8_t Port_ExpanderPortsInputChannelStatus[2];
@@ -67,10 +74,10 @@ bool Port_Read(const uint8_t _channel) {
 #ifdef PORT_EXPANDER_ENABLE
 		case 100 ... 107: // Port-expander (port 0)
 			return (Port_ExpanderPortsInputChannelStatus[0] & (1 << (_channel - 100))); // Remove offset 100 (return false if pressed)
-
+	#if PORT_EXPANDER_PORT_COUNT >= 2
 		case 108 ... 115: // Port-expander (port 1)
 			return (Port_ExpanderPortsInputChannelStatus[1] & (1 << (_channel - 108))); // Remove offset 100 + 8 (return false if pressed)
-
+	#endif
 #endif
 
 		default: // Everything else (doesn't make sense at all) isn't supposed to be pressed
@@ -115,6 +122,21 @@ void Port_Write(const uint8_t _channel, const bool _newState, const bool _initGp
 		}
 
 #ifdef PORT_EXPANDER_ENABLE
+	#ifdef PORT_EXPANDER_TYPE_PCF8574
+		case 100 ... 107: {
+			uint8_t oldMask = Port_ExpanderPortsOutputChannelStatus[0];
+			if (_newState) {
+				oldMask |= (1 << Port_ChannelToBit(_channel));
+			} else {
+				oldMask &= ~(1 << Port_ChannelToBit(_channel));
+			}
+			Port_ExpanderPortsOutputChannelStatus[0] = oldMask;
+			i2cBusTwo.beginTransmission(expanderI2cAddress);
+			i2cBusTwo.write(oldMask);
+			i2cBusTwo.endTransmission();
+			break;
+		}
+	#else
 		case 100 ... 115: {
 			uint8_t portOffset = 0;
 			if (_channel >= 108 && _channel <= 115) {
@@ -138,6 +160,7 @@ void Port_Write(const uint8_t _channel, const bool _newState, const bool _initGp
 			i2cBusTwo.endTransmission();
 			break;
 		}
+	#endif
 #endif
 
 		default: {
@@ -149,43 +172,12 @@ void Port_Write(const uint8_t _channel, const bool _newState, const bool _initGp
 #ifdef PORT_EXPANDER_ENABLE
 // Translates digitalWrite-style "GPIO" to bit
 uint8_t Port_ChannelToBit(const uint8_t _channel) {
-	switch (_channel) {
-		case 100:
-		case 108:
-			return 0;
-			break;
-		case 101:
-		case 109:
-			return 1;
-			break;
-		case 102:
-		case 110:
-			return 2;
-			break;
-		case 103:
-		case 111:
-			return 3;
-			break;
-		case 104:
-		case 112:
-			return 4;
-			break;
-		case 105:
-		case 113:
-			return 5;
-			break;
-		case 106:
-		case 114:
-			return 6;
-			break;
-		case 107:
-		case 115:
-			return 7;
-			break;
-
-		default:
-			return 255; // not valid!
+	if (_channel >= 100 && _channel <= 107) {
+		return _channel - 100;
+	} else if (_channel >= 108 && _channel <= 115) {
+		return _channel - 108;
 	}
+	return 255; // not valid!
 }
 
 // Writes initial port-configuration (I/O) for port-expander PCA9555
@@ -193,16 +185,19 @@ uint8_t Port_ChannelToBit(const uint8_t _channel) {
 // So every bit representing an output-channel needs to be set to 0.
 void Port_WriteInitMaskForOutputChannels(void) {
 	const uint8_t portBaseValueBitMask = 255;
-	const uint8_t portsToWrite = 2;
-	uint8_t OutputBitMaskInOutAsPerPort[portsToWrite] = {portBaseValueBitMask, portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0, [1]: port1
+	#if PORT_EXPANDER_PORT_COUNT == 2
+	uint8_t OutputBitMaskInOutAsPerPort[PORT_EXPANDER_PORT_COUNT] = {portBaseValueBitMask, portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0, [1]: port1
+	#else
+	uint8_t OutputBitMaskInOutAsPerPort[PORT_EXPANDER_PORT_COUNT] = {portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0, [1]: port1
+	#endif
 
 	// init status cache with values from HW
 	i2cBusTwo.beginTransmission(expanderI2cAddress);
 	i2cBusTwo.write(0x02); // Pointer to first output-register
 	i2cBusTwo.endTransmission(false);
-	i2cBusTwo.requestFrom(expanderI2cAddress, static_cast<size_t>(portsToWrite), true); // ...and read the contents
-	if (i2cBusTwo.available() == portsToWrite) {
-		for (uint8_t i = 0; i < portsToWrite; i++) {
+	i2cBusTwo.requestFrom(expanderI2cAddress, static_cast<size_t>(PORT_EXPANDER_PORT_COUNT), true); // ...and read the contents
+	if (i2cBusTwo.available() == PORT_EXPANDER_PORT_COUNT) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			Port_ExpanderPortsOutputChannelStatus[i] = i2cBusTwo.read();
 		}
 	}
@@ -212,7 +207,7 @@ void Port_WriteInitMaskForOutputChannels(void) {
 		// Bits of channels to be configured as input are 1 by default.
 		// So in order to change I/O-direction to output we need to set those bits to 0.
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(GPIO_PA_EN));
-	} else if (GPIO_PA_EN >= 108 && GPIO_PA_EN <= 115) {
+	} else if (GPIO_PA_EN >= 108 && GPIO_PA_EN <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(GPIO_PA_EN));
 	}
 	#endif
@@ -220,7 +215,7 @@ void Port_WriteInitMaskForOutputChannels(void) {
 	#ifdef GPIO_HP_EN // Set as output to enable/disable amp for headphones
 	if (GPIO_HP_EN >= 100 && GPIO_HP_EN <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(GPIO_HP_EN));
-	} else if (GPIO_HP_EN >= 108 && GPIO_HP_EN <= 115) {
+	} else if (GPIO_HP_EN >= 108 && GPIO_HP_EN <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(GPIO_HP_EN));
 	}
 	#endif
@@ -228,7 +223,7 @@ void Port_WriteInitMaskForOutputChannels(void) {
 	#ifdef POWER // Set as output to trigger mosfet/power-pin for powering peripherals. Hint: logic is inverted if INVERT_POWER is enabled.
 	if (POWER >= 100 && POWER <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(POWER));
-	} else if (POWER >= 108 && POWER <= 115) {
+	} else if (POWER >= 108 && POWER <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(POWER));
 	}
 	#endif
@@ -236,20 +231,26 @@ void Port_WriteInitMaskForOutputChannels(void) {
 	#ifdef BUTTONS_LED
 	if (BUTTONS_LED >= 100 && BUTTONS_LED <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(BUTTONS_LED));
-	} else if (BUTTONS_LED >= 108 && BUTTONS_LED <= 115) {
+	} else if (BUTTONS_LED >= 108 && BUTTONS_LED <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(BUTTONS_LED));
 	}
 	#endif
 
 	// Only change port-config if necessary (at least bitmask changed from base-default for one port)
-	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask)) {
+	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || ((PORT_EXPANDER_PORT_COUNT == 2) && (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask))) {
 		// all outputs to LOW
 		Port_ExpanderPortsOutputChannelStatus[0] &= OutputBitMaskInOutAsPerPort[0];
+	#ifdef PORT_EXPANDER_TYPE_PCF8574
+		i2cBusTwo.beginTransmission(expanderI2cAddress);
+		i2cBusTwo.write(Port_ExpanderPortsOutputChannelStatus[0]);
+		i2cBusTwo.endTransmission();
+	#else
 		Port_ExpanderPortsOutputChannelStatus[1] &= OutputBitMaskInOutAsPerPort[1];
 
 		i2cBusTwo.beginTransmission(expanderI2cAddress);
+
 		i2cBusTwo.write(0x06); // Pointer to configuration of input/output
-		for (uint8_t i = 0; i < portsToWrite; i++) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			i2cBusTwo.write(OutputBitMaskInOutAsPerPort[i]);
 			// Serial.printf("Register %u - Mask: %u\n", 0x06+i, OutputBitMaskInOutAsPerPort[i]);
 		}
@@ -260,20 +261,25 @@ void Port_WriteInitMaskForOutputChannels(void) {
 		i2cBusTwo.write(0x02); // Pointer to configuration of output-channels (high/low)
 		i2cBusTwo.write(Port_ExpanderPortsOutputChannelStatus, static_cast<size_t>(portsToWrite));
 		i2cBusTwo.endTransmission();
+	#endif
 	}
 }
 
 // Some channels are configured as output before shutdown in order to avoid unwanted interrupts while ESP32 sleeps
 void Port_MakeSomeChannelsOutputForShutdown(void) {
 	const uint8_t portBaseValueBitMask = 255;
-	const uint8_t portsToWrite = 2;
-	uint8_t OutputBitMaskInOutAsPerPort[portsToWrite] = {portBaseValueBitMask, portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0, [1]: port1
-	uint8_t OutputBitMaskLowHighAsPerPort[portsToWrite] = {0x00, 0x00};
+	#if PORT_EXPANDER_PORT_COUNT == 2
+	uint8_t OutputBitMaskInOutAsPerPort[PORT_EXPANDER_PORT_COUNT] = {portBaseValueBitMask, portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0, [1]: port1
+	uint8_t OutputBitMaskLowHighAsPerPort[PORT_EXPANDER_PORT_COUNT] = {0x00, 0x00};
+	#else
+	uint8_t OutputBitMaskInOutAsPerPort[PORT_EXPANDER_PORT_COUNT] = {portBaseValueBitMask}; // 255 => all channels set to input; [0]: port0
+	uint8_t OutputBitMaskLowHighAsPerPort[PORT_EXPANDER_PORT_COUNT] = {0x00};
+	#endif
 
 	#ifdef HP_DETECT // https://forum.espuino.de/t/lolin-d32-pro-mit-sd-mmc-pn5180-max-fuenf-buttons-und-port-expander-smd/638/33
 	if (HP_DETECT >= 100 && HP_DETECT <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(HP_DETECT));
-	} else if (HP_DETECT >= 108 && HP_DETECT <= 115) {
+	} else if (HP_DETECT >= 108 && HP_DETECT <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(HP_DETECT));
 	}
 	#endif
@@ -282,7 +288,7 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 	#ifdef GPIO_PA_EN
 	if (GPIO_PA_EN >= 100 && GPIO_PA_EN <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(GPIO_PA_EN));
-	} else if (GPIO_PA_EN >= 108 && GPIO_PA_EN <= 115) {
+	} else if (GPIO_PA_EN >= 108 && GPIO_PA_EN <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(GPIO_PA_EN));
 	}
 	#endif
@@ -290,7 +296,7 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 	#ifdef GPIO_HP_EN
 	if (GPIO_HP_EN >= 100 && GPIO_HP_EN <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(GPIO_HP_EN));
-	} else if (GPIO_HP_EN >= 108 && GPIO_HP_EN <= 115) {
+	} else if (GPIO_HP_EN >= 108 && GPIO_HP_EN <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(GPIO_HP_EN));
 	}
 	#endif
@@ -302,7 +308,7 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 		#else
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(POWER));
 		#endif
-	} else if (POWER >= 108 && POWER <= 115) {
+	} else if (POWER >= 108 && POWER <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		#ifdef INVERT_POWER
 		OutputBitMaskLowHighAsPerPort[1] |= (1 << Port_ChannelToBit(POWER));
 		#else
@@ -314,16 +320,21 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 	#ifdef BUTTONS_LED
 	if (BUTTONS_LED >= 100 && BUTTONS_LED <= 107) {
 		OutputBitMaskInOutAsPerPort[0] &= ~(1 << Port_ChannelToBit(BUTTONS_LED));
-	} else if (BUTTONS_LED >= 108 && BUTTONS_LED <= 115) {
+	} else if (BUTTONS_LED >= 108 && BUTTONS_LED <= 115 && PORT_EXPANDER_PORT_COUNT == 2) {
 		OutputBitMaskInOutAsPerPort[1] &= ~(1 << Port_ChannelToBit(BUTTONS_LED));
 	}
 	#endif
 
 	// Only change port-config if necessary (at least bitmask changed from base-default for one port)
-	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask)) {
+	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || ((PORT_EXPANDER_PORT_COUNT == 2) && (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask))) {
+	#ifdef PORT_EXPANDER_TYPE_PCF8574
+		i2cBusTwo.beginTransmission(expanderI2cAddress);
+		i2cBusTwo.write(OutputBitMaskInOutAsPerPort[0]);
+		i2cBusTwo.endTransmission();
+	#else
 		i2cBusTwo.beginTransmission(expanderI2cAddress);
 		i2cBusTwo.write(0x06); // Pointer to configuration of input/output
-		for (uint8_t i = 0; i < portsToWrite; i++) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			i2cBusTwo.write(OutputBitMaskInOutAsPerPort[i]);
 		}
 		i2cBusTwo.endTransmission();
@@ -334,6 +345,7 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 		i2cBusTwo.write(OutputBitMaskLowHighAsPerPort[0]); // port0
 		i2cBusTwo.write(OutputBitMaskLowHighAsPerPort[1]); // port1
 		i2cBusTwo.endTransmission();
+	#endif
 	}
 }
 
@@ -353,6 +365,7 @@ void Port_ExpanderHandler(void) {
 	}
 	#endif
 
+	#ifdef PORT_EXPANDER_TYPE_PCA9555
 	i2cBusTwo.beginTransmission(expanderI2cAddress);
 	i2cBusTwo.write(0x00); // Pointer to input-register...
 	uint8_t error = i2cBusTwo.endTransmission(false);
@@ -360,17 +373,18 @@ void Port_ExpanderHandler(void) {
 		Log_Printf(LOGLEVEL_ERROR, "Error in endTransmission(): %d", error);
 		i2cBusTwo.endTransmission(true);
 
-	#ifdef PE_INTERRUPT_PIN_ENABLE
+		#ifdef PE_INTERRUPT_PIN_ENABLE
 		Port_AllowReadFromPortExpander = true;
-	#endif
+		#endif
 
 		return;
 	}
 	i2cBusTwo.requestFrom(expanderI2cAddress, 2u); // ...and read its bytes
+	#endif
 
-	if (i2cBusTwo.available() == 2) {
+	if (i2cBusTwo.available() == PORT_EXPANDER_PORT_COUNT) {
 		uint32_t inputCurr = 0;
-		for (uint8_t i = 0; i < 2; i++) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			inputCurr |= i2cBusTwo.read() << 8 * i; // Cache current readout
 		}
 
@@ -380,7 +394,7 @@ void Port_ExpanderHandler(void) {
 		inputChanged = inputPrev ^ inputCurr;
 
 		uint32_t inputStable = 0;
-		for (uint8_t i = 0; i < 2; i++) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			inputStable |= Port_ExpanderPortsInputChannelStatus[i] << 8 * i;
 		}
 
@@ -388,7 +402,7 @@ void Port_ExpanderHandler(void) {
 		inputStable &= inputChanged;
 		inputStable |= (~inputChanged & inputCurr);
 
-		for (uint8_t i = 0; i < 2; i++) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			Port_ExpanderPortsInputChannelStatus[i] = (inputStable >> 8 * i) & 0xff;
 			// Serial.printf("%u Debug: PE-Port: %u  Status: %u\n", millis(), i, Port_ExpanderPortsInputChannelStatus[i]);
 		}
@@ -407,13 +421,15 @@ void Port_ExpanderHandler(void) {
 // Make sure ports are read finally at shutdown in order to clear any active IRQs that could cause re-wakeup immediately
 void Port_Exit(void) {
 	Port_MakeSomeChannelsOutputForShutdown();
+	#ifdef PORT_EXPANDER_TYPE_PCA9555
 	i2cBusTwo.beginTransmission(expanderI2cAddress);
 	i2cBusTwo.write(0x00); // Pointer to input-registers...
 	i2cBusTwo.endTransmission();
 	i2cBusTwo.requestFrom(expanderI2cAddress, 2u); // ...and read its bytes
+	#endif
 
-	if (i2cBusTwo.available() == 2) {
-		for (uint8_t i = 0; i < 2; i++) {
+	if (i2cBusTwo.available() == PORT_EXPANDER_PORT_COUNT) {
+		for (uint8_t i = 0; i < PORT_EXPANDER_PORT_COUNT; i++) {
 			Port_ExpanderPortsInputChannelStatus[i] = i2cBusTwo.read();
 		}
 	}
@@ -422,7 +438,9 @@ void Port_Exit(void) {
 // Tests if port-expander can be detected at address configured
 void Port_Test(void) {
 	i2cBusTwo.beginTransmission(expanderI2cAddress);
+	#ifdef PORT_EXPANDER_TYPE_PCA9555
 	i2cBusTwo.write(0x02);
+	#endif
 	if (!i2cBusTwo.endTransmission()) {
 		Log_Println(portExpanderFound, LOGLEVEL_NOTICE);
 	} else {
