@@ -80,3 +80,5 @@ time_t AudioPlayer_GetPlayTimeAllTime(void);
 uint32_t AudioPlayer_GetCurrentTime(void);
 uint32_t AudioPlayer_GetFileDuration(void);
 String AudioPlayer_GetStationLogoUrl(void);
+void AudioPlayer_ProcessPause(void);
+void AudioPlayer_ProcessResume(void);
