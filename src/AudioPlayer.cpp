@@ -36,6 +36,17 @@ static bool AudioPlayer_PauseTask = false;
 static bool AudioPlayer_LoopInitialized = false;
 // uint32_t cnt123 = 0;
 
+#ifdef BOARD_HAS_PSRAM
+class AudioCustom : public Audio {
+public:
+	void *operator new(size_t size) { return psramFound() ? ps_malloc(size) : malloc(size); }
+};
+static AudioCustom *AudioPlayer_Audio = nullptr;
+#else
+static Audio AudioPlayer_AudioStatic;
+static Audio *AudioPlayer_Audio = &AudioPlayer_AudioStatic;
+#endif
+
 // Playlist
 static playlistSortMode AudioPlayer_PlaylistSortMode = AUDIOPLAYER_PLAYLIST_SORT_MODE_DEFAULT;
 
@@ -364,44 +375,43 @@ void AudioPlayer_HeadphoneVolumeManager(void) {
 #endif
 }
 
-class AudioCustom : public Audio {
-public:
-	void *operator new(size_t size) {
-		return psramFound() ? ps_malloc(size) : malloc(size);
+static Audio *AudioPlayer_GetAudio(void) {
+#ifdef BOARD_HAS_PSRAM
+	if (!AudioPlayer_Audio) {
+		AudioPlayer_Audio = new AudioCustom();
 	}
-};
+#endif
+	return AudioPlayer_Audio;
+}
 
 // Function to play music as task
 static void AudioPlayer_Process(void) {
-#ifdef BOARD_HAS_PSRAM
-	AudioCustom *audio = new AudioCustom();
-#else
-	static Audio audioAsStatic; // Don't use heap as it's needed for other stuff :-)
-	Audio *audio = &audioAsStatic;
-#endif
-
-#ifdef I2S_COMM_FMT_LSB_ENABLE
-	audio->setI2SCommFMT_LSB(true);
-#endif
+	Audio *audio = AudioPlayer_GetAudio();
 
 	constexpr uint32_t playbackTimeout = 2000;
 	uint32_t playbackTimeoutStart = millis();
 
-	AudioPlayer_CurrentVolume = AudioPlayer_GetInitVolume();
-	audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-	audio->setVolumeSteps(AUDIOPLAYER_VOLUME_MAX);
-	audio->setVolume(AudioPlayer_CurrentVolume, VOLUMECURVE);
-	audio->forceMono(gPlayProperties.currentPlayMono);
-	int8_t currentEqualizer[3] = {gPrefsSettings.getChar("gainLowPass", 0), gPrefsSettings.getChar("gainBandPass", 0), gPrefsSettings.getChar("gainHighPass", 0)};
-	audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
-
 	uint8_t currentVolume;
+	static int8_t currentEqualizer[3];
 	BaseType_t trackQStatus = pdFAIL;
 	uint8_t trackCommand = NO_ACTION;
 	bool audioReturnCode;
 	AudioPlayer_CurrentTime = 0;
 	AudioPlayer_FileDuration = 0;
 	uint32_t AudioPlayer_LastPlaytimeStatsTimestamp = 0u;
+
+	if (!AudioPlayer_LoopInitialized) {
+		AudioPlayer_CurrentVolume = AudioPlayer_GetInitVolume();
+		audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+		audio->setVolumeSteps(AUDIOPLAYER_VOLUME_MAX);
+		audio->setVolume(AudioPlayer_CurrentVolume, VOLUMECURVE);
+		audio->forceMono(gPlayProperties.currentPlayMono);
+		currentEqualizer[0] = gPrefsSettings.getChar("gainLowPass", 0);
+		currentEqualizer[1] = gPrefsSettings.getChar("gainBandPass", 0);
+		currentEqualizer[2] = gPrefsSettings.getChar("gainHighPass", 0);
+		audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
+		AudioPlayer_LoopInitialized = true;
+	}
 
 	if (AudioPlayer_PauseTask) {
 		return;
