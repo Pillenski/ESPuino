@@ -34,6 +34,8 @@
 playProps gPlayProperties;
 static bool AudioPlayer_PauseTask = false;
 static bool AudioPlayer_LoopInitialized = false;
+uint32_t playbackTimeoutStart = 0;
+uint32_t AudioPlayer_LastPlaytimeStatsTimestamp = 0u;
 // uint32_t cnt123 = 0;
 
 #ifdef BOARD_HAS_PSRAM
@@ -389,16 +391,12 @@ static void AudioPlayer_Process(void) {
 	Audio *audio = AudioPlayer_GetAudio();
 
 	constexpr uint32_t playbackTimeout = 2000;
-	uint32_t playbackTimeoutStart = millis();
 
 	uint8_t currentVolume;
 	static int8_t currentEqualizer[3];
 	BaseType_t trackQStatus = pdFAIL;
 	uint8_t trackCommand = NO_ACTION;
 	bool audioReturnCode;
-	AudioPlayer_CurrentTime = 0;
-	AudioPlayer_FileDuration = 0;
-	uint32_t AudioPlayer_LastPlaytimeStatsTimestamp = 0u;
 
 	if (!AudioPlayer_LoopInitialized) {
 		AudioPlayer_CurrentVolume = AudioPlayer_GetInitVolume();
@@ -410,8 +408,14 @@ static void AudioPlayer_Process(void) {
 		currentEqualizer[1] = gPrefsSettings.getChar("gainBandPass", 0);
 		currentEqualizer[2] = gPrefsSettings.getChar("gainHighPass", 0);
 		audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
+		AudioPlayer_CurrentTime = 0;
+		AudioPlayer_FileDuration = 0;
+		playbackTimeoutStart = millis();
 		AudioPlayer_LoopInitialized = true;
 	}
+
+	//Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_LoopInitialized: %u", AudioPlayer_LoopInitialized);
+	//Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_PauseTask: %u", AudioPlayer_PauseTask);
 
 	if (AudioPlayer_PauseTask) {
 		return;
@@ -763,6 +767,7 @@ static void AudioPlayer_Process(void) {
 				gPlayProperties.trackFinished = true;
 				return;
 			} else {
+				//Log_Printf(LOGLEVEL_DEBUG, "audio->connecttoFS: %s", gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber));
 				audioReturnCode = audio->connecttoFS(gFSystem, gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber));
 				// consider track as finished, when audio lib call was not successful
 			}
@@ -891,7 +896,7 @@ static void AudioPlayer_Process(void) {
 	audio->loop();
 	if (gPlayProperties.playlistFinished || gPlayProperties.pausePlay) {
 		if (!gPlayProperties.currentSpeechActive) {
-			vTaskDelay(portTICK_PERIOD_MS * 10); // Waste some time if playlist is not active
+			//vTaskDelay(portTICK_PERIOD_MS * 10); // Waste some time if playlist is not active
 		}
 	} else {
 		System_UpdateActivityTimer(); // Refresh if playlist is active so uC will not fall asleep due to reaching inactivity-time
@@ -901,10 +906,15 @@ static void AudioPlayer_Process(void) {
 		playbackTimeoutStart = millis();
 	}
 
+	Log_Printf(LOGLEVEL_DEBUG, "audio->isRunning: %u", audio->isRunning());
+
 	// If error occured: move to the next track in the playlist
 	const bool activeMode = (gPlayProperties.playMode != NO_PLAYLIST && gPlayProperties.playMode != BUSY);
 	const bool noAudio = (!audio->isRunning() && !gPlayProperties.pausePlay);
 	const bool timeout = ((millis() - playbackTimeoutStart) > playbackTimeout);
+	Log_Printf(LOGLEVEL_DEBUG, "activeMode: %u", activeMode);
+	Log_Printf(LOGLEVEL_DEBUG, "noAudio: %u", noAudio);
+	Log_Printf(LOGLEVEL_DEBUG, "timeout: %u", timeout);
 	if (activeMode) {
 		// we check for timeout
 		if (noAudio && timeout) {
@@ -920,7 +930,7 @@ static void AudioPlayer_Process(void) {
 	if ((System_GetOperationMode() == OPMODE_BLUETOOTH_SOURCE) && audio->isRunning()) {
 		// do not delay here, audio task is time critical in BT-Source mode
 	} else {
-		vTaskDelay(portTICK_PERIOD_MS * 1);
+		//vTaskDelay(portTICK_PERIOD_MS * 1);
 	}
 	// esp_task_wdt_reset(); // Don't forget to feed the dog!
 
