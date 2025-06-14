@@ -906,15 +906,10 @@ static void AudioPlayer_Process(void) {
 		playbackTimeoutStart = millis();
 	}
 
-	Log_Printf(LOGLEVEL_DEBUG, "audio->isRunning: %u", audio->isRunning());
-
 	// If error occured: move to the next track in the playlist
 	const bool activeMode = (gPlayProperties.playMode != NO_PLAYLIST && gPlayProperties.playMode != BUSY);
 	const bool noAudio = (!audio->isRunning() && !gPlayProperties.pausePlay);
 	const bool timeout = ((millis() - playbackTimeoutStart) > playbackTimeout);
-	Log_Printf(LOGLEVEL_DEBUG, "activeMode: %u", activeMode);
-	Log_Printf(LOGLEVEL_DEBUG, "noAudio: %u", noAudio);
-	Log_Printf(LOGLEVEL_DEBUG, "timeout: %u", timeout);
 	if (activeMode) {
 		// we check for timeout
 		if (noAudio && timeout) {
