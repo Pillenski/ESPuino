@@ -408,6 +408,7 @@ static void AudioPlayer_Process(void) {
 		currentEqualizer[1] = gPrefsSettings.getChar("gainBandPass", 0);
 		currentEqualizer[2] = gPrefsSettings.getChar("gainHighPass", 0);
 		audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
+		audio->setBufsize(1600 * 10 * 2,__UINT16_MAX__*10);
 		AudioPlayer_CurrentTime = 0;
 		AudioPlayer_FileDuration = 0;
 		playbackTimeoutStart = millis();
