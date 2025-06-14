@@ -335,7 +335,7 @@ void Port_MakeSomeChannelsOutputForShutdown(void) {
 	if ((OutputBitMaskInOutAsPerPort[0] != portBaseValueBitMask) || ((PORT_EXPANDER_PORT_COUNT == 2) && (OutputBitMaskInOutAsPerPort[1] != portBaseValueBitMask))) {
 	#ifdef PORT_EXPANDER_TYPE_PCF8574
 		i2cBusTwo.beginTransmission(expanderI2cAddress);
-		i2cBusTwo.write(OutputBitMaskInOutAsPerPort[0]);
+		i2cBusTwo.write(OutputBitMaskInOutAsPerPort[0] | OutputBitMaskLowHighAsPerPort[0]);
 		i2cBusTwo.endTransmission();
 	#else
 		i2cBusTwo.beginTransmission(expanderI2cAddress);
