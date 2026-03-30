@@ -65,12 +65,12 @@
     //#define GPIO_PA_EN                      99         // To enable/disable amp for loudspeaker; connected to port-expander
 
     // Control-buttons
-    #define NEXT_BUTTON                     106        // Next-Button: connected to port-expander
-    #define PREVIOUS_BUTTON                 104         // Prev-Button: connected to port-expander
-    #define PAUSEPLAY_BUTTON                105         // Pplay-Button: connected to port-expander
+    #define NEXT_BUTTON                     105        // Next-Button: connected to port-expander
+    #define PREVIOUS_BUTTON                 103         // Prev-Button: connected to port-expander
+    #define PAUSEPLAY_BUTTON                104         // Pplay-Button: connected to port-expander
     #define ROTARYENCODER_BUTTON            99         // Set to 99 to disable the button; connected to port-expander
-    #define BUTTON_4                        107         // Button 4: connected to port-expander
-    #define BUTTON_5                        103       // Button 5: connected to port-expander
+    #define BUTTON_4                        106         // Button 4: connected to port-expander
+    #define BUTTON_5                        107       // Button 5: connected to port-expander
 
     //#define BUTTONS_LED                   114         // Powers the LEDs of the buttons. Make sure the current consumed by the LEDs can be handled by the used GPIO
 
