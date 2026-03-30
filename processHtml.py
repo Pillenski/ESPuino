@@ -20,17 +20,17 @@ except ImportError:
 from flask_minify.parsers import Parser
 import json
 
+# Ensure minify_html is installed in version necessary
 try:
-    import pkg_resources
-except:
-    print("Trying to Install required module: setuptools\nIf this failes, please execute \"pip install setuptools\" manually.")
-    env.Execute("$PYTHONEXE -m pip install setuptools")
-    import pkg_resources
+    from importlib.metadata import version, PackageNotFoundError
+except ImportError:
+    from importlib.metadata import version, PackageNotFoundError
 
 try:
-    pkg_resources.require("minify_html==0.15.0")
+    if version("minify_html") != "0.15.0":
+        raise PackageNotFoundError
     import minify_html
-except pkg_resources.ResolutionError:
+except (ImportError, PackageNotFoundError):
     print("Trying to Install required module: minify_html\nIf this failes, please execute \"pip install minify_html==0.15.0\" manually.")
     env.Execute("$PYTHONEXE -m pip install minify_html==0.15.0")
     import minify_html
@@ -101,8 +101,8 @@ class HtmlHeaderProcessor:
                 content = f.read()
                 if ".min" not in str(binary_path):  # Only minify if it is not already minified
                     # Minify the HTML, JS and CSS code
-                    content = minify_html.minify(content, minify_js=True, minify_css=True,
-                                                 remove_processing_instructions=True)
+                    #content = minify_html.minify(content, minify_js=False, minify_css=False,
+                    #                             remove_processing_instructions=True)
                     # Write it to a file, just for debugging
                     with open(str(binary_path).replace(binary_path.suffix, ".min" + binary_path.suffix), "w",
                               encoding="utf-8") as f:
