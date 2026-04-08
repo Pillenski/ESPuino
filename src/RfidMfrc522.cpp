@@ -66,7 +66,7 @@ void Rfid_Init(void) {
 
 void Rfid_Task(void *parameter) {
 	#ifdef PAUSE_WHEN_RFID_REMOVED
-	byte lastValidcardId[cardIdSize] = { 0 };
+	byte lastValidcardId[cardIdSize] = {0};
 	bool hasLastValidCard = false;
 	bool waitingForCardRemoval = false;
 	uint32_t lastCardSeenTimestamp = 0;

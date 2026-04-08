@@ -447,15 +447,15 @@ static void AudioPlayer_Process(void) {
 		currentEqualizer[1] = gPrefsSettings.getChar("gainBandPass", 0);
 		currentEqualizer[2] = gPrefsSettings.getChar("gainHighPass", 0);
 		audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
-		audio->setBufsize(1600 * 10 * 2,__UINT16_MAX__*10);
+		audio->setBufsize(1600 * 10 * 2, __UINT16_MAX__ * 10);
 		AudioPlayer_CurrentTime = 0;
 		AudioPlayer_FileDuration = 0;
 		playbackTimeoutStart = millis();
 		AudioPlayer_LoopInitialized = true;
 	}
 
-	//Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_LoopInitialized: %u", AudioPlayer_LoopInitialized);
-	//Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_PauseTask: %u", AudioPlayer_PauseTask);
+	// Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_LoopInitialized: %u", AudioPlayer_LoopInitialized);
+	// Log_Printf(LOGLEVEL_DEBUG, "AudioPlayer_PauseTask: %u", AudioPlayer_PauseTask);
 
 	if (AudioPlayer_PauseTask) {
 		return;
@@ -807,7 +807,7 @@ static void AudioPlayer_Process(void) {
 				gPlayProperties.trackFinished = true;
 				return;
 			} else {
-				//Log_Printf(LOGLEVEL_DEBUG, "audio->connecttoFS: %s", gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber));
+				// Log_Printf(LOGLEVEL_DEBUG, "audio->connecttoFS: %s", gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber));
 				audioReturnCode = audio->connecttoFS(gFSystem, gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber));
 				// consider track as finished, when audio lib call was not successful
 			}
@@ -936,7 +936,7 @@ static void AudioPlayer_Process(void) {
 	audio->loop();
 	if (gPlayProperties.playlistFinished || gPlayProperties.pausePlay) {
 		if (!gPlayProperties.currentSpeechActive) {
-			//vTaskDelay(portTICK_PERIOD_MS * 10); // Waste some time if playlist is not active
+			// vTaskDelay(portTICK_PERIOD_MS * 10); // Waste some time if playlist is not active
 		}
 	} else {
 		System_UpdateActivityTimer(); // Refresh if playlist is active so uC will not fall asleep due to reaching inactivity-time
@@ -965,7 +965,7 @@ static void AudioPlayer_Process(void) {
 	if ((System_GetOperationMode() == OPMODE_BLUETOOTH_SOURCE) && audio->isRunning()) {
 		// do not delay here, audio task is time critical in BT-Source mode
 	} else {
-		//vTaskDelay(portTICK_PERIOD_MS * 1);
+		// vTaskDelay(portTICK_PERIOD_MS * 1);
 	}
 	// esp_task_wdt_reset(); // Don't forget to feed the dog!
 

@@ -4,12 +4,13 @@
 #include "Battery.h"
 
 #ifdef MEASURE_BATTERY_MAX17055
+	#include "Led.h"
 	#include "Log.h"
 	#include "Mqtt.h"
-	#include "Led.h"
 	#include "System.h"
-	#include <Wire.h>
+
 	#include <Arduino-MAX17055_Driver.h>
+	#include <Wire.h>
 
 float batteryLow = s_batteryLow;
 float batteryCritical = s_batteryCritical;

@@ -11,9 +11,9 @@
 #include <AudioPlayer.h>
 
 #ifdef BLUETOOTH_ENABLE
-	#include "esp_bt.h"
 	#include "BluetoothA2DPSink.h"
 	#include "BluetoothA2DPSource.h"
+	#include "esp_bt.h"
 #endif
 
 #ifdef BLUETOOTH_ENABLE
@@ -181,8 +181,7 @@ void Bluetooth_Init(void) {
 			.bck_io_num = I2S_BCLK,
 			.ws_io_num = I2S_LRC,
 			.data_out_num = I2S_DOUT,
-			.data_in_num = I2S_PIN_NO_CHANGE
-		};
+			.data_in_num = I2S_PIN_NO_CHANGE};
 		a2dp_sink->set_pin_config(pin_config);
 		a2dp_sink->activate_pin_code(false);
 	#ifdef PLAY_MONO_SPEAKER
