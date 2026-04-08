@@ -80,6 +80,7 @@
 		"voldown": "Diminuer le volume",
 		"volup": "Augmenter le volume",
 		"current": "Piste actuelle",
+		"playlist": "Playlist",
 		"command": "Exécuter la modification"
 	},
 	"files": {

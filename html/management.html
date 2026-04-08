@@ -133,6 +133,58 @@
 			padding: 10px;
 		}
 
+		.playlist-container {
+			max-height: 240px;
+			overflow-y: auto;
+			border: 1px solid var(--bs-border-color, #dee2e6);
+			border-radius: 0.375rem;
+			background: var(--bs-body-bg, #ffffff);
+		}
+
+		.playlist-entry {
+			width: 100%;
+			display: flex;
+			align-items: flex-start;
+			gap: 0.75rem;
+			padding: 0.65rem 0.75rem;
+			border: 0;
+			border-bottom: 1px solid var(--bs-border-color, #dee2e6);
+			background: transparent;
+			text-align: left;
+		}
+
+		.playlist-entry:last-child {
+			border-bottom: 0;
+		}
+
+		.playlist-entry:hover {
+			background: var(--bs-secondary-bg, #f8f9fa);
+		}
+
+		.playlist-entry-active {
+			background: #cfe2ff;
+		}
+
+		.playlist-track-number {
+			min-width: 2.5rem;
+			font-weight: 600;
+		}
+
+		.playlist-entry-text {
+			min-width: 0;
+			flex: 1;
+		}
+
+		.playlist-entry-name {
+			word-break: break-word;
+		}
+
+		.playlist-entry-path {
+			font-size: 0.8rem;
+			color: #6c757d;
+			word-break: break-all;
+		}
+
 		.volume-button {
 			width: 60px;
 		}
@@ -617,6 +669,10 @@
 							aria-valuemin="0" aria-valuemax="100"></div>
 					</div>
 					<div id="playtime"> </div>
+				</div>
+				<div class="mb-3 col-md-12" id="playlistSection" style="display: none;">
+					<legend data-i18n="control.playlist"></legend>
+					<div id="playlistEntries" class="playlist-container"></div>
 				</div>
 				<hr>
 				<div class="mb-3 col-md-12">
@@ -1242,12 +1298,17 @@
 		var host = $(location).attr('hostname');
 		var language = navigator.language || navigator.userLanguage;
 		var localize;
+		var currentPlaylistRevision = 0;
+		var loadedPlaylistRevision = -1;
+		var currentTrackNumber = 0;
+		var playlistLoadInProgress = false;
 		/* show active / selected tab */
 		$('#nav-tab.nav-tabs a').on('shown.bs.tab', function (e) {
 			ActiveTab = $(e.target).attr('id');
 			console.log("ActiveTab: " + ActiveTab);
 			if (ActiveTab == 'nav-control-tab') {
 				getTrackProgress();
+				fetchPlaylist();
 			}
 			updateTabStyle();
 			localStorage.setItem("active-tab", ActiveTab);
@@ -1973,6 +2034,7 @@
 				socket.send('{"ssids":{"ssids":"ssids"}}'); // get ssids
 				socket.send('{"trackinfo":{"trackinfo":"trackinfo"}}'); // get trackinfo
 				socket.send('{"coverimg":{"coverimg":"coverimg"}}'); // get cover image
+				fetchPlaylist(true);
 			};
 			socket.onclose = function (e) {
 				console.log('Socket is closed. Reconnect will be attempted in 5 seconds.', e.reason);
@@ -2018,6 +2080,14 @@
 				if ("trackinfo" in socketMsg) {
 					document.getElementById('track').innerHTML = socketMsg.trackinfo.name;
 					setTrackProgress(socketMsg.trackinfo);
+					currentTrackNumber = socketMsg.trackinfo.currentTrackNumber || 0;
+					if (typeof socketMsg.trackinfo.playlistRevision !== "undefined") {
+						currentPlaylistRevision = socketMsg.trackinfo.playlistRevision;
+						if (loadedPlaylistRevision !== currentPlaylistRevision) {
+							fetchPlaylist(true);
+						}
+					}
+					updatePlaylistActiveTrack(currentTrackNumber);
 					var btnTrackPlayPause = document.getElementById('nav-btn-play');
 					if (socketMsg.trackinfo.pausePlay) {
 						btnTrackPlayPause.innerHTML = '<i id="ico-play-pause" class="fas fa-lg fa-play"></i>';
@@ -2053,6 +2123,101 @@
 					fillSettings(socketMsg.settings);
 				}
 			};
+		}
+
+		async function fetchPlaylist(force = false) {
+			if (playlistLoadInProgress) {
+				return;
+			}
+			if (!force && loadedPlaylistRevision === currentPlaylistRevision && loadedPlaylistRevision >= 0) {
+				updatePlaylistActiveTrack(currentTrackNumber);
+				return;
+			}
+
+			playlistLoadInProgress = true;
+			try {
+				let data = await (await fetch("http://" + host + "/playlist")).json();
+				if (data && data.playlist) {
+					renderPlaylist(data.playlist);
+					loadedPlaylistRevision = data.playlist.revision;
+					currentPlaylistRevision = data.playlist.revision;
+				}
+			} catch (error) {
+				console.log("failed to fetch playlist", error);
+			} finally {
+				playlistLoadInProgress = false;
+			}
+		}
+
+		function renderPlaylist(playlist) {
+			const playlistSection = document.getElementById('playlistSection');
+			const playlistEntries = document.getElementById('playlistEntries');
+			const entries = playlist.entries || [];
+
+			playlistEntries.innerHTML = '';
+			if (!playlist || playlist.numberOfTracks <= 1 || entries.length <= 1) {
+				playlistSection.style.display = 'none';
+				return;
+			}
+
+			playlistSection.style.display = '';
+			entries.forEach((entry) => {
+				const button = document.createElement('button');
+				button.type = 'button';
+				button.className = 'playlist-entry';
+				button.dataset.trackNumber = entry.trackNumber;
+				button.title = entry.path || entry.displayName || '';
+				button.onclick = function () {
+					jumpToPlaylistTrack(entry.trackNumber);
+				};
+
+				const trackNumber = document.createElement('span');
+				trackNumber.className = 'playlist-track-number';
+				trackNumber.textContent = entry.trackNumber + '.';
+
+				const textWrapper = document.createElement('span');
+				textWrapper.className = 'playlist-entry-text';
+
+				const displayName = document.createElement('div');
+				displayName.className = 'playlist-entry-name';
+				displayName.textContent = entry.displayName || entry.path || '';
+
+				const pathHint = document.createElement('div');
+				pathHint.className = 'playlist-entry-path';
+				pathHint.textContent = (entry.path && entry.path !== entry.displayName) ? entry.path : '';
+
+				textWrapper.appendChild(displayName);
+				textWrapper.appendChild(pathHint);
+				button.appendChild(trackNumber);
+				button.appendChild(textWrapper);
+				playlistEntries.appendChild(button);
+			});
+
+			updatePlaylistActiveTrack(currentTrackNumber);
+		}
+
+		function updatePlaylistActiveTrack(trackNumber) {
+			const playlistEntries = document.querySelectorAll('#playlistEntries .playlist-entry');
+			playlistEntries.forEach((entry) => {
+				const isActive = Number(entry.dataset.trackNumber) === Number(trackNumber) && Number(trackNumber) > 0;
+				entry.classList.toggle('playlist-entry-active', isActive);
+				if (isActive) {
+					entry.scrollIntoView({
+						block: 'nearest'
+					});
+				}
+			});
+		}
+
+		function jumpToPlaylistTrack(trackNumber) {
+			if (!socket || socket.readyState !== WebSocket.OPEN) {
+				return;
+			}
+			socket.send(JSON.stringify({
+				"controls": {
+					jumpToTrackNumber: Number(trackNumber)
+				}
+			}));
 		}
 		async function fillSettings(settings) {
 			if (!settings) {

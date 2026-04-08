@@ -80,6 +80,7 @@
 		"voldown": "Volume Down",
 		"volup": "Volume Up",
 		"current": "Current track",
+		"playlist": "Playlist",
 		"command": "Execute Modification"
 	},
 	"files": {

@@ -23,6 +23,7 @@
 #include "System.h"
 #include "Wlan.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
 #include "revision.h"
 #include "soc/timer_group_reg.h"
 #include "soc/timer_group_struct.h"
@@ -31,6 +32,7 @@
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 #include <nvs.h>
+#include <vector>
 
 typedef struct {
 	char nvsKey[13];
@@ -61,6 +63,16 @@ uint32_t index_buffer_read = 0;
 
 static SemaphoreHandle_t explorerFileUploadFinished;
 static TaskHandle_t fileStorageTaskHandle;
+static SemaphoreHandle_t playlistSnapshotMutex;
+
+typedef struct {
+	uint16_t trackNumber;
+	String displayName;
+	String path;
+} playlistSnapshotEntry_t;
+
+static uint32_t playlistSnapshotRevision = 0;
+static std::vector<playlistSnapshotEntry_t> playlistSnapshotEntries;
 
 void Web_DumpSdToNvs(const char *_filename);
 static void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
@@ -72,6 +84,7 @@ static void explorerHandleDeleteRequest(AsyncWebServerRequest *request);
 static void explorerHandleCreateRequest(AsyncWebServerRequest *request);
 static void explorerHandleRenameRequest(AsyncWebServerRequest *request);
 static void explorerHandleAudioRequest(AsyncWebServerRequest *request);
+static void handlePlaylistRequest(AsyncWebServerRequest *request);
 static void handleTrackProgressRequest(AsyncWebServerRequest *request);
 static void handleGetSavedSSIDs(AsyncWebServerRequest *request);
 static void handlePostSavedSSIDs(AsyncWebServerRequest *request, JsonVariant &json);
@@ -93,6 +106,11 @@ static void onWebsocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *clien
 static void settingsToJSON(JsonObject obj, const String section);
 static bool JSONToSettings(JsonObject obj);
 static void webserverStart(void);
+static bool processJsonRequest(char *_serialJson, uint32_t clientId);
+static bool lockPlaylistSnapshot(void);
+static void unlockPlaylistSnapshot(void);
+static String getPlaylistDisplayName(const char *path);
+static size_t getPlaylistSnapshotCount(void);
 
 // IPAddress converters, for a description see: https://arduinojson.org/news/2021/05/04/version-6-18-0/
 void convertFromJson(JsonVariantConst src, IPAddress &dst) {
@@ -117,6 +135,48 @@ struct SpiRamAllocator {
 	}
 };
 using SpiRamJsonDocument = BasicJsonDocument<SpiRamAllocator>;
+
+static bool lockPlaylistSnapshot(void) {
+	if (!playlistSnapshotMutex) {
+		playlistSnapshotMutex = xSemaphoreCreateMutex();
+	}
+	return playlistSnapshotMutex && xSemaphoreTake(playlistSnapshotMutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void unlockPlaylistSnapshot(void) {
+	if (playlistSnapshotMutex) {
+		xSemaphoreGive(playlistSnapshotMutex);
+	}
+}
+
+static String getPlaylistDisplayName(const char *path) {
+	if (!path) {
+		return "";
+	}
+	if (!strncmp(path, "http", 4)) {
+		return String(path);
+	}
+
+	String fullPath = path;
+	while (fullPath.length() > 1 && fullPath.endsWith("/")) {
+		fullPath.remove(fullPath.length() - 1);
+	}
+
+	int slashPos = fullPath.lastIndexOf('/');
+	if (slashPos >= 0 && slashPos + 1 < fullPath.length()) {
+		return fullPath.substring(slashPos + 1);
+	}
+	return fullPath;
+}
+
+static size_t getPlaylistSnapshotCount(void) {
+	size_t count = 0;
+	if (lockPlaylistSnapshot()) {
+		count = playlistSnapshotEntries.size();
+		unlockPlaylistSnapshot();
+	}
+	return count;
+}
 
 static void destroyDoubleBuffer() {
 	for (size_t i = 0; i < nr_of_buffers; i++) {
@@ -558,6 +618,7 @@ void webserverStart(void) {
 
 		wServer.on("/exploreraudio", HTTP_POST, explorerHandleAudioRequest);
 
+		wServer.on("/playlist", HTTP_GET, handlePlaylistRequest);
 		wServer.on("/trackprogress", HTTP_GET, handleTrackProgressRequest);
 
 		wServer.on("/savedSSIDs", HTTP_GET, handleGetSavedSSIDs);
@@ -1112,7 +1173,7 @@ void handleDebugRequest(AsyncWebServerRequest *request) {
 
 // Takes inputs from webgui, parses JSON and saves values in NVS
 // If operation was successful (NVS-write is verified) true is returned
-bool processJsonRequest(char *_serialJson) {
+static bool processJsonRequest(char *_serialJson, uint32_t clientId) {
 	if (!_serialJson) {
 		return false;
 	}
@@ -1130,6 +1191,16 @@ bool processJsonRequest(char *_serialJson) {
 	}
 
 	JsonObject obj = doc.as<JsonObject>();
+	if (obj.containsKey("controls") && obj["controls"].containsKey("jumpToTrackNumber")) {
+		int32_t jumpToTrackNumber = obj["controls"]["jumpToTrackNumber"].as<int32_t>();
+		size_t playlistEntryCount = getPlaylistSnapshotCount();
+		if (jumpToTrackNumber <= 0 || jumpToTrackNumber > (int32_t) playlistEntryCount) {
+			Web_SendWebsocketData(clientId, WebsocketCodeType::Error);
+			return false;
+		}
+		AudioPlayer_TrackControlToQueueSender(JUMPTRACK, jumpToTrackNumber - 1);
+	}
+
 	return JSONToSettings(obj);
 }
 
@@ -1168,6 +1239,7 @@ void Web_SendWebsocketData(uint32_t client, WebsocketCodeType code) {
 		entry["pausePlay"] = gPlayProperties.pausePlay;
 		entry["currentTrackNumber"] = gPlayProperties.currentTrackNumber + 1;
 		entry["numberOfTracks"] = (gPlayProperties.playlist) ? gPlayProperties.playlist->size() : 0;
+		entry["playlistRevision"] = gPlayProperties.playlistRevision;
 		entry["volume"] = AudioPlayer_GetCurrentVolume();
 		entry["name"] = gPlayProperties.title;
 		entry["posPercent"] = gPlayProperties.currentRelPos;
@@ -1237,7 +1309,7 @@ void onWebsocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
 			// the whole message is in a single frame and we got all of it's data
 			// Serial.printf("ws[%s][%u] %s-message[%llu]: ", server->url(), client->id(), (info->opcode == WS_TEXT) ? "text" : "binary", info->len);
 
-			if (processJsonRequest((char *) data)) {
+			if (processJsonRequest((char *) data, client->id())) {
 				if (data && (strncmp((char *) data, "track", 5))) { // Don't send back ok-feedback if track's name is requested in background
 					Web_SendWebsocketData(client->id(), WebsocketCodeType::Ok);
 				}
@@ -1695,6 +1767,47 @@ void explorerHandleAudioRequest(AsyncWebServerRequest *request) {
 	request->send(200);
 }
 
+void handlePlaylistRequest(AsyncWebServerRequest *request) {
+	if (lockPlaylistSnapshot()) {
+		size_t capacity = JSON_OBJECT_SIZE(1) + JSON_OBJECT_SIZE(3) + JSON_ARRAY_SIZE(playlistSnapshotEntries.size());
+		for (const auto &entrySnapshot : playlistSnapshotEntries) {
+			capacity += JSON_OBJECT_SIZE(3) + entrySnapshot.displayName.length() + entrySnapshot.path.length() + 64;
+		}
+
+		AsyncJsonResponse *response = new AsyncJsonResponse(false, capacity);
+		JsonObject root = response->getRoot();
+		JsonObject playlistObj = root.createNestedObject("playlist");
+		playlistObj["revision"] = playlistSnapshotRevision;
+		playlistObj["numberOfTracks"] = playlistSnapshotEntries.size();
+		JsonArray entries = playlistObj.createNestedArray("entries");
+		for (const auto &entrySnapshot : playlistSnapshotEntries) {
+			JsonObject entry = entries.createNestedObject();
+			entry["trackNumber"] = entrySnapshot.trackNumber;
+			entry["displayName"] = entrySnapshot.displayName;
+			entry["path"] = entrySnapshot.path;
+		}
+		unlockPlaylistSnapshot();
+
+		if (response->overflowed()) {
+			Log_Println(jsonbufferOverflow, LOGLEVEL_ERROR);
+			request->send(500);
+			return;
+		}
+		response->setLength();
+		request->send(response);
+		return;
+	}
+
+	AsyncJsonResponse *response = new AsyncJsonResponse(false, JSON_OBJECT_SIZE(1) + JSON_OBJECT_SIZE(3) + JSON_ARRAY_SIZE(0));
+	JsonObject root = response->getRoot();
+	JsonObject playlistObj = root.createNestedObject("playlist");
+	playlistObj["revision"] = 0;
+	playlistObj["numberOfTracks"] = 0;
+	playlistObj.createNestedArray("entries");
+	response->setLength();
+	request->send(response);
+}
+
 // Handles track progress requests
 void handleTrackProgressRequest(AsyncWebServerRequest *request) {
 	String json = "{\"trackProgress\":{";
@@ -1703,6 +1816,38 @@ void handleTrackProgressRequest(AsyncWebServerRequest *request) {
 	json += ",\"duration\":" + String(AudioPlayer_GetFileDuration());
 	json += "}}";
 	request->send(200, "application/json", json);
+}
+
+void Web_UpdatePlaylistSnapshot(const Playlist *playlist, uint32_t revision) {
+	if (!lockPlaylistSnapshot()) {
+		return;
+	}
+
+	playlistSnapshotRevision = revision;
+	playlistSnapshotEntries.clear();
+	if (playlist) {
+		playlistSnapshotEntries.reserve(playlist->size());
+		for (size_t i = 0; i < playlist->size(); i++) {
+			const char *path = playlist->at(i);
+			playlistSnapshotEntry_t entrySnapshot;
+			entrySnapshot.trackNumber = static_cast<uint16_t>(i + 1);
+			entrySnapshot.displayName = getPlaylistDisplayName(path);
+			entrySnapshot.path = path ? String(path) : String("");
+			playlistSnapshotEntries.push_back(entrySnapshot);
+		}
+	}
+
+	unlockPlaylistSnapshot();
+}
+
+void Web_ClearPlaylistSnapshot(uint32_t revision) {
+	if (!lockPlaylistSnapshot()) {
+		return;
+	}
+
+	playlistSnapshotRevision = revision;
+	playlistSnapshotEntries.clear();
+	unlockPlaylistSnapshot();
 }
 
 void handleGetSavedSSIDs(AsyncWebServerRequest *request) {

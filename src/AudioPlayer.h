@@ -17,6 +17,7 @@ enum class playlistSortMode : uint8_t {
 typedef struct { // Bit field
 	uint8_t playMode; // playMode
 	Playlist *playlist; // playlist
+	uint32_t playlistRevision; // playlist revision for UI snapshots
 	char title[255]; // current title
 	bool repeatCurrentTrack		: 1; // If current track should be looped
 	bool repeatPlaylist			: 1; // If whole playlist should be looped
@@ -47,6 +48,11 @@ typedef struct { // Bit field
 	size_t audioFileSize; // file size of current audio file
 } playProps;
 
+typedef struct {
+	uint8_t action;
+	uint16_t trackNumber;
+} TrackControlMessage;
+
 extern playProps gPlayProperties;
 
 void AudioPlayer_Init(void);
@@ -58,6 +64,7 @@ void AudioPlayer_VolumeToQueueSender(const int32_t _newVolume, bool reAdjustRota
 void AudioPlayer_EqualizerToQueueSender(const int8_t gainLowPass, const int8_t gainBandPass, const int8_t gainHighPass);
 void AudioPlayer_TrackQueueDispatcher(const char *_itemToPlay, const uint32_t _lastPlayPos, const uint32_t _playMode, const uint16_t _trackLastPlayed);
 void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand);
+void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand, const uint16_t trackNumber);
 void AudioPlayer_PauseOnMinVolume(const uint8_t oldVolume, const uint8_t newVolume);
 
 playlistSortMode AudioPlayer_GetPlaylistSortMode(void);

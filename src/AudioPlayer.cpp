@@ -95,6 +95,7 @@ static void AudioPlayer_RandomizePlaylist(Playlist *playlist);
 static void AudioPlayer_Task(void *parameter);
 static size_t AudioPlayer_NvsRfidWriteWrapper(const char *_rfidCardId, const char *_track, const uint32_t _playPosition, const uint8_t _playMode, const uint16_t _trackLastPlayed, const uint16_t _numberOfTracks);
 static void AudioPlayer_ClearCover(void);
+static uint32_t AudioPlayer_NextPlaylistRevision(uint32_t currentRevision);
 
 void AudioPlayer_Init(void) {
 	// load playtime total from NVS
@@ -164,6 +165,7 @@ void AudioPlayer_Init(void) {
 	gPlayProperties.coverFilePos = 0;
 	AudioPlayer_StationLogoUrl = "";
 	gPlayProperties.playlist = new Playlist();
+	Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 
 	AudioPlayer_LoopInitialized = false;
 }
@@ -425,6 +427,11 @@ static Audio *AudioPlayer_GetAudio(void) {
 	return AudioPlayer_Audio;
 }
 
+static uint32_t AudioPlayer_NextPlaylistRevision(uint32_t currentRevision) {
+	currentRevision++;
+	return currentRevision ? currentRevision : 1;
+}
+
 // Function to play music as task
 static void AudioPlayer_Process(void) {
 	Audio *audio = AudioPlayer_GetAudio();
@@ -434,7 +441,7 @@ static void AudioPlayer_Process(void) {
 	uint8_t currentVolume;
 	static int8_t currentEqualizer[3];
 	BaseType_t trackQStatus = pdFAIL;
-	uint8_t trackCommand = NO_ACTION;
+	TrackControlMessage trackCommand = { NO_ACTION, 0 };
 	bool audioReturnCode;
 
 	if (!AudioPlayer_LoopInitialized) {
@@ -480,7 +487,7 @@ static void AudioPlayer_Process(void) {
 	}
 
 	if (xQueueReceive(gTrackControlQueue, &trackCommand, 0) == pdPASS) {
-		Log_Printf(LOGLEVEL_INFO, newCntrlReceivedQueue, trackCommand);
+		Log_Printf(LOGLEVEL_INFO, newCntrlReceivedQueue, trackCommand.action);
 	}
 
 	// Update playtime stats every 250 ms
@@ -510,13 +517,15 @@ static void AudioPlayer_Process(void) {
 
 	Playlist *newPlaylist;
 	trackQStatus = xQueueReceive(gTrackQueue, &newPlaylist, 0);
-	if (trackQStatus == pdPASS || gPlayProperties.trackFinished || trackCommand != NO_ACTION) {
+	if (trackQStatus == pdPASS || gPlayProperties.trackFinished || trackCommand.action != NO_ACTION) {
 		if (trackQStatus == pdPASS) {
 			audio->stopSong();
 
 			// destroy the old playlist and assign the new
 			freePlaylist(gPlayProperties.playlist);
 			gPlayProperties.playlist = newPlaylist;
+			gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+			Web_UpdatePlaylistSnapshot(gPlayProperties.playlist, gPlayProperties.playlistRevision);
 			Log_Printf(LOGLEVEL_NOTICE, newPlaylistReceived, gPlayProperties.playlist->size());
 			Log_Printf(LOGLEVEL_DEBUG, "Free heap: %u", ESP.getFreeHeap());
 			playbackTimeoutStart = millis();
@@ -549,6 +558,8 @@ static void AudioPlayer_Process(void) {
 			if (gPlayProperties.sleepAfterCurrentTrack) { // Go to sleep if "sleep after track" was requested
 				gPlayProperties.playlistFinished = true;
 				gPlayProperties.playMode = NO_PLAYLIST;
+				gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+				Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 				System_RequestSleep();
 				return;
 			}
@@ -560,30 +571,32 @@ static void AudioPlayer_Process(void) {
 			}
 		}
 
-		if (gPlayProperties.playlistFinished && trackCommand != NO_ACTION) {
+		if (gPlayProperties.playlistFinished && trackCommand.action != NO_ACTION) {
 			if (gPlayProperties.playMode != BUSY) { // Prevents from staying in mode BUSY forever when error occured (e.g. directory empty that should be played)
 				Log_Println(noPlaymodeChangeIfIdle, LOGLEVEL_NOTICE);
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				System_IndicateError();
 				return;
 			}
 		}
 		/* Check if track-control was called
 		   (stop, start, next track, prev. track, last track, first track...) */
-		switch (trackCommand) {
+		switch (trackCommand.action) {
 			case STOP:
 				audio->stopSong();
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				Log_Println(cmndStop, LOGLEVEL_INFO);
 				gPlayProperties.pausePlay = true;
 				gPlayProperties.playlistFinished = true;
 				gPlayProperties.playMode = NO_PLAYLIST;
+				gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+				Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 				Audio_setTitle(noPlaylist);
 				AudioPlayer_ClearCover();
 				return;
 
 			case PAUSEPLAY:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				audio->pauseResume();
 				if (gPlayProperties.pausePlay) {
 					Log_Println(cmndResumeFromPause, LOGLEVEL_INFO);
@@ -599,7 +612,7 @@ static void AudioPlayer_Process(void) {
 				return;
 
 			case NEXTTRACK:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				if (gPlayProperties.pausePlay) {
 					audio->pauseResume();
 					gPlayProperties.pausePlay = false;
@@ -634,7 +647,7 @@ static void AudioPlayer_Process(void) {
 				break;
 
 			case PREVIOUSTRACK:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				if (gPlayProperties.pausePlay) {
 					audio->pauseResume();
 					gPlayProperties.pausePlay = false;
@@ -694,8 +707,36 @@ static void AudioPlayer_Process(void) {
 					}
 				}
 				break;
+
+			case JUMPTRACK:
+				trackCommand.action = NO_ACTION;
+				if (gPlayProperties.playlist == nullptr || trackCommand.trackNumber >= gPlayProperties.playlist->size()) {
+					System_IndicateError();
+					return;
+				}
+				if (gPlayProperties.pausePlay) {
+					audio->pauseResume();
+					gPlayProperties.pausePlay = false;
+				}
+				if (gPlayProperties.repeatCurrentTrack) {
+					gPlayProperties.repeatCurrentTrack = false;
+#ifdef MQTT_ENABLE
+					publishMqtt(topicRepeatModeState, AudioPlayer_GetRepeatMode(), false);
+#endif
+				}
+				gPlayProperties.currentTrackNumber = trackCommand.trackNumber;
+				if (gPlayProperties.saveLastPlayPosition) {
+					AudioPlayer_NvsRfidWriteWrapper(gPlayProperties.playRfidTag, gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber), 0, gPlayProperties.playMode, gPlayProperties.currentTrackNumber, gPlayProperties.playlist->size());
+					Log_Println(trackStartAudiobook, LOGLEVEL_INFO);
+				}
+				Log_Printf(LOGLEVEL_INFO, "Command: jump to track %u", gPlayProperties.currentTrackNumber + 1);
+				if (!gPlayProperties.playlistFinished) {
+					audio->stopSong();
+				}
+				break;
+
 			case FIRSTTRACK:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				if (gPlayProperties.pausePlay) {
 					audio->pauseResume();
 					gPlayProperties.pausePlay = false;
@@ -712,7 +753,7 @@ static void AudioPlayer_Process(void) {
 				break;
 
 			case LASTTRACK:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				if (gPlayProperties.pausePlay) {
 					audio->pauseResume();
 					gPlayProperties.pausePlay = false;
@@ -738,7 +779,7 @@ static void AudioPlayer_Process(void) {
 				break;
 
 			default:
-				trackCommand = NO_ACTION;
+				trackCommand.action = NO_ACTION;
 				Log_Println(cmndDoesNotExist, LOGLEVEL_NOTICE);
 				System_IndicateError();
 				return;
@@ -750,6 +791,8 @@ static void AudioPlayer_Process(void) {
 			}
 			gPlayProperties.playlistFinished = true;
 			gPlayProperties.playMode = NO_PLAYLIST;
+			gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+			Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 			System_RequestSleep();
 			return;
 		}
@@ -763,6 +806,8 @@ static void AudioPlayer_Process(void) {
 				}
 				gPlayProperties.playlistFinished = true;
 				gPlayProperties.playMode = NO_PLAYLIST;
+				gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+				Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 				Audio_setTitle(noPlaylist);
 				AudioPlayer_ClearCover();
 #ifdef MQTT_ENABLE
@@ -777,6 +822,8 @@ static void AudioPlayer_Process(void) {
 				if (gPlayProperties.sleepAfterPlaylist || gPlayProperties.sleepAfterCurrentTrack) {
 					gPlayProperties.playlistFinished = true;
 					gPlayProperties.playMode = NO_PLAYLIST;
+					gPlayProperties.playlistRevision = AudioPlayer_NextPlaylistRevision(gPlayProperties.playlistRevision);
+					Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 					System_RequestSleep();
 					return;
 				} // Repeat playlist; set current track number back to 0
@@ -1297,7 +1344,12 @@ std::optional<Playlist *> AudioPlayer_ReturnPlaylistFromWebstream(const char *_w
 
 // Adds new control-command to control-queue
 void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand) {
-	xQueueSend(gTrackControlQueue, &trackCommand, 0);
+	AudioPlayer_TrackControlToQueueSender(trackCommand, 0);
+}
+
+void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand, const uint16_t trackNumber) {
+	TrackControlMessage message = { trackCommand, trackNumber };
+	xQueueSend(gTrackControlQueue, &message, 0);
 }
 
 // Knuth-Fisher-Yates-algorithm to randomize playlist

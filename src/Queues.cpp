@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "settings.h"
 
+#include "AudioPlayer.h"
 #include "Log.h"
 #include "Playlist.h"
 #include "Rfid.h"
@@ -23,7 +24,7 @@ void Queues_Init(void) {
 		Log_Println(unableToCreateRfidQ, LOGLEVEL_ERROR);
 	}
 
-	gTrackControlQueue = xQueueCreate(1, sizeof(uint8_t));
+	gTrackControlQueue = xQueueCreate(1, sizeof(TrackControlMessage));
 	if (gTrackControlQueue == NULL) {
 		Log_Println(unableToCreateMgmtQ, LOGLEVEL_ERROR);
 	}
