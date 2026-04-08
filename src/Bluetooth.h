@@ -2,6 +2,7 @@
 
 void Bluetooth_Init(void);
 void Bluetooth_Cyclic(void);
+void Bluetooth_Exit(void);
 
 // AVRC commands, see https://github.com/pschatzmann/ESP32-A2DP/wiki/Controlling-your-Phone-with-AVRC-Commands
 

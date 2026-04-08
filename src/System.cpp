@@ -5,6 +5,8 @@
 
 #include "Audio.h"
 #include "AudioPlayer.h"
+#include "Bluetooth.h"
+#include "Ftp.h"
 #include "Led.h"
 #include "Log.h"
 #include "Mqtt.h"
@@ -37,6 +39,43 @@ volatile uint8_t System_OperationMode;
 
 void System_SleepHandler(void);
 void System_DeepSleepManager(void);
+static void System_SetInputIfGpio(int16_t gpio);
+static void System_ReleasePeripheralPinsForDeepSleep(void);
+
+static void System_SetInputIfGpio(int16_t gpio) {
+	if (gpio >= 0 && gpio <= MAX_GPIO) {
+		pinMode(static_cast<uint8_t>(gpio), INPUT);
+	}
+}
+
+static void System_ReleasePeripheralPinsForDeepSleep(void) {
+	// Release signal lines before cutting peripheral power to avoid backfeeding
+	// DAC/SD/RFID chips through ESP32 IO protection structures while ESP itself
+	// stays powered during deep sleep.
+	System_SetInputIfGpio(I2S_BCLK);
+	System_SetInputIfGpio(I2S_LRC);
+	System_SetInputIfGpio(I2S_DOUT);
+
+#ifdef SD_MMC_1BIT_MODE
+	System_SetInputIfGpio(2);
+	System_SetInputIfGpio(14);
+	System_SetInputIfGpio(15);
+#else
+	System_SetInputIfGpio(SPISD_CS);
+	#ifndef SINGLE_SPI_ENABLE
+	System_SetInputIfGpio(SPISD_SCK);
+	System_SetInputIfGpio(SPISD_MISO);
+	System_SetInputIfGpio(SPISD_MOSI);
+	#endif
+#endif
+
+#if defined(RFID_READER_TYPE_MFRC522_SPI)
+	System_SetInputIfGpio(RFID_CS);
+	System_SetInputIfGpio(RFID_SCK);
+	System_SetInputIfGpio(RFID_MISO);
+	System_SetInputIfGpio(RFID_MOSI);
+#endif
+}
 
 void System_Init(void) {
 	srand(esp_random());
@@ -191,6 +230,8 @@ void System_PreparePowerDown(void) {
 #endif
 
 	Mqtt_Exit();
+	Ftp_Exit();
+	Bluetooth_Exit();
 	Led_Exit();
 
 #ifdef USE_LAST_VOLUME_AFTER_REBOOT
@@ -220,6 +261,7 @@ void System_DeepSleepManager(void) {
 		Log_Println(goToSleepNow, LOGLEVEL_NOTICE);
 		// prepare power down (shutdown common modules)
 		System_PreparePowerDown();
+		System_ReleasePeripheralPinsForDeepSleep();
 		// switch off power
 		Power_PeripheralOff();
 		// time to settle down..

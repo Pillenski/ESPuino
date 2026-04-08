@@ -108,7 +108,7 @@ void Led_Init(void) {
 		NULL, /* Task input parameter */
 		1, /* Priority of the task */
 		&Led_TaskHandle, /* Task handle. */
-		1 /* Core where the task should run */
+		ARDUINO_RUNNING_CORE /* Core where the task should run */
 	);
 #endif
 }

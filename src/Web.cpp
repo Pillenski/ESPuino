@@ -1305,7 +1305,7 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			(void *) filePathCopy, /* Task input parameter */
 			2 | portPRIVILEGE_BIT, /* Priority of the task */
 			&fileStorageTaskHandle, /* Task handle. */
-			1 /* Core where the task should run */
+			ARDUINO_RUNNING_CORE /* Core where the task should run */
 		);
 
 		// register for early disconnect events

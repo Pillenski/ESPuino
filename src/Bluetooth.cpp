@@ -258,6 +258,33 @@ void Bluetooth_Cyclic(void) {
 #endif
 }
 
+void Bluetooth_Exit(void) {
+#ifdef BLUETOOTH_ENABLE
+	if (!a2dp_sink && !a2dp_source && !audioSourceRingBuffer) {
+		return;
+	}
+
+	Log_Println("shutdown Bluetooth..", LOGLEVEL_NOTICE);
+
+	if (a2dp_sink) {
+		delete a2dp_sink;
+		a2dp_sink = nullptr;
+	}
+
+	if (a2dp_source) {
+		delete a2dp_source;
+		a2dp_source = nullptr;
+	}
+
+	if (audioSourceRingBuffer) {
+		vRingbufferDelete(audioSourceRingBuffer);
+		audioSourceRingBuffer = nullptr;
+	}
+
+	btDeviceName = "";
+#endif
+}
+
 void Bluetooth_PlayPauseTrack(void) {
 #ifdef BLUETOOTH_ENABLE
 	if ((System_GetOperationMode() == OPMODE_BLUETOOTH_SINK) && (a2dp_sink)) {

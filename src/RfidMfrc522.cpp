@@ -59,33 +59,71 @@ void Rfid_Init(void) {
 		NULL, /* Task input parameter */
 		2 | portPRIVILEGE_BIT, /* Priority of the task */
 		&rfidTaskHandle, /* Task handle. */
-		1 /* Core where the task should run */
+		ARDUINO_RUNNING_CORE /* Core where the task should run */
 	);
 	#endif
 }
 
 void Rfid_Task(void *parameter) {
 	#ifdef PAUSE_WHEN_RFID_REMOVED
-	uint8_t control = 0x00;
+	byte lastValidcardId[cardIdSize] = { 0 };
+	bool hasLastValidCard = false;
+	bool waitingForCardRemoval = false;
+	uint32_t lastCardSeenTimestamp = 0;
 	#endif
 
 	for (;;) {
-		if (RFID_SCAN_INTERVAL / 2 >= 20) {
-			vTaskDelay(portTICK_PERIOD_MS * (RFID_SCAN_INTERVAL / 2));
-		} else {
-			vTaskDelay(portTICK_PERIOD_MS * 20);
-		}
-		byte cardId[cardIdSize];
-		String cardIdString;
+		uint32_t pollDelayMs = (RFID_SCAN_INTERVAL / 2 >= 20) ? (RFID_SCAN_INTERVAL / 2) : 20;
 	#ifdef PAUSE_WHEN_RFID_REMOVED
-		byte lastValidcardId[cardIdSize];
-		bool sameCardReapplied = false;
+		if (waitingForCardRemoval && pollDelayMs < RFID_SCAN_INTERVAL) {
+			pollDelayMs = RFID_SCAN_INTERVAL;
+		}
 	#endif
+		vTaskDelay(portTICK_PERIOD_MS * pollDelayMs);
+
 		if ((millis() - Rfid_LastRfidCheckTimestamp) >= RFID_SCAN_INTERVAL) {
 			// Log_Printf(LOGLEVEL_DEBUG, "%u", uxTaskGetStackHighWaterMark(NULL));
 
 			Rfid_LastRfidCheckTimestamp = millis();
+	#ifdef PAUSE_WHEN_RFID_REMOVED
+			if (waitingForCardRemoval) {
+				bool cardStillPresent = false;
+
+				// RC522 needs a small grace period here because presence checks can sporadically fail
+				// although the card is still on the reader.
+				if (!mfrc522.PICC_IsNewCardPresent()) {
+					cardStillPresent = mfrc522.PICC_ReadCardSerial() || mfrc522.PICC_ReadCardSerial();
+				} else {
+					cardStillPresent = mfrc522.PICC_ReadCardSerial();
+				}
+
+				if (cardStillPresent) {
+					lastCardSeenTimestamp = millis();
+					continue;
+				}
+
+				const uint32_t removalDebounceMs = (RFID_SCAN_INTERVAL * 3 >= 300) ? (RFID_SCAN_INTERVAL * 3) : 300;
+				if ((millis() - lastCardSeenTimestamp) < removalDebounceMs) {
+					continue;
+				}
+
+				Log_Println(rfidTagRemoved, LOGLEVEL_NOTICE);
+				if (!gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
+					AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
+				}
+				mfrc522.PICC_HaltA();
+				mfrc522.PCD_StopCrypto1();
+				waitingForCardRemoval = false;
+				continue;
+			}
+	#endif
+
 			// Reset the loop if no new card is present on the sensor/reader. This saves the entire process when idle.
+			byte cardId[cardIdSize];
+			String cardIdString;
+	#ifdef PAUSE_WHEN_RFID_REMOVED
+			bool sameCardReapplied = false;
+	#endif
 
 			if (!mfrc522.PICC_IsNewCardPresent()) {
 				continue;
@@ -108,7 +146,7 @@ void Rfid_Task(void *parameter) {
 	#endif
 
 	#ifdef PAUSE_WHEN_RFID_REMOVED
-			if (memcmp((const void *) lastValidcardId, (const void *) cardId, sizeof(cardId)) == 0) {
+			if (hasLastValidCard && memcmp((const void *) lastValidcardId, (const void *) cardId, sizeof(cardId)) == 0) {
 				sameCardReapplied = true;
 			}
 	#endif
@@ -141,46 +179,11 @@ void Rfid_Task(void *parameter) {
 				}
 			}
 			memcpy(lastValidcardId, mfrc522.uid.uidByte, cardIdSize);
+			hasLastValidCard = true;
+			lastCardSeenTimestamp = millis();
+			waitingForCardRemoval = true;
 	#else
 			xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0); // If PAUSE_WHEN_RFID_REMOVED isn't active, every card-apply leads to new playlist-generation
-	#endif
-
-	#ifdef PAUSE_WHEN_RFID_REMOVED
-			// https://github.com/miguelbalboa/rfid/issues/188; voodoo! :-)
-			while (true) {
-				if (RFID_SCAN_INTERVAL / 2 >= 20) {
-					vTaskDelay(portTICK_PERIOD_MS * (RFID_SCAN_INTERVAL / 2));
-				} else {
-					vTaskDelay(portTICK_PERIOD_MS * 20);
-				}
-				control = 0;
-				for (uint8_t i = 0u; i < 3; i++) {
-					if (!mfrc522.PICC_IsNewCardPresent()) {
-						if (mfrc522.PICC_ReadCardSerial()) {
-							control |= 0x16;
-						}
-						if (mfrc522.PICC_ReadCardSerial()) {
-							control |= 0x16;
-						}
-						control += 0x1;
-					}
-					control += 0x4;
-				}
-
-				if (control == 13 || control == 14) {
-					// card is still there
-				} else {
-					break;
-				}
-			}
-
-			Log_Println(rfidTagRemoved, LOGLEVEL_NOTICE);
-			if (!gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
-				AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
-				Log_Println(rfidTagReapplied, LOGLEVEL_NOTICE);
-			}
-			mfrc522.PICC_HaltA();
-			mfrc522.PCD_StopCrypto1();
 	#endif
 		}
 	}

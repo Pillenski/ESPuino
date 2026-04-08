@@ -50,6 +50,7 @@ typedef struct { // Bit field
 extern playProps gPlayProperties;
 
 void AudioPlayer_Init(void);
+void AudioPlayer_StartTask(void);
 void AudioPlayer_Exit(void);
 void AudioPlayer_Cyclic(void);
 uint8_t AudioPlayer_GetRepeatMode(void);

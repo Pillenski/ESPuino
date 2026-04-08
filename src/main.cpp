@@ -30,6 +30,8 @@
 
 #include <Wire.h>
 
+SET_LOOP_TASK_STACK_SIZE(10 * 1024);
+
 bool gPlayLastRfIdWhenWiFiConnected = false;
 bool gTriedToConnectToHost = false;
 
@@ -203,6 +205,7 @@ void setup() {
 	RotaryEncoder_Init();
 	Wlan_Init();
 	Bluetooth_Init();
+	AudioPlayer_StartTask();
 
 	if (OPMODE_NORMAL == System_GetOperationMode()) {
 		Wlan_Cyclic();
@@ -255,8 +258,6 @@ void loop() {
 		RotaryEncoder_Cyclic();
 		Mqtt_Cyclic();
 	}
-	vTaskDelay(portTICK_PERIOD_MS * 1u);
-	AudioPlayer_Cyclic();
 	vTaskDelay(portTICK_PERIOD_MS * 1u);
 	Battery_Cyclic();
 	// Port_Cyclic(); // called by button (controlled via hw-timer)

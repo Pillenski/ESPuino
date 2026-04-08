@@ -69,6 +69,20 @@ void Ftp_Cyclic(void) {
 #endif
 }
 
+void Ftp_Exit(void) {
+#ifdef FTP_ENABLE
+	if (!ftpSrv && !ftpEnableLastStatus && !ftpEnableCurrentStatus) {
+		return;
+	}
+
+	Log_Println("shutdown FTP..", LOGLEVEL_NOTICE);
+	delete ftpSrv;
+	ftpSrv = nullptr;
+	ftpEnableLastStatus = false;
+	ftpEnableCurrentStatus = false;
+#endif
+}
+
 void Ftp_EnableServer(void) {
 #ifdef FTP_ENABLE
 	if (Wlan_IsConnected() && !ftpEnableLastStatus && !ftpEnableCurrentStatus) {

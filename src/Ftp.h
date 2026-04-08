@@ -6,3 +6,4 @@ constexpr uint8_t ftpPasswordLength = 15u; // Length will be published n-1 as ma
 void Ftp_Init(void);
 void Ftp_Cyclic(void);
 void Ftp_EnableServer(void);
+void Ftp_Exit(void);

@@ -37,6 +37,14 @@ static bool AudioPlayer_LoopInitialized = false;
 uint32_t playbackTimeoutStart = 0;
 uint32_t AudioPlayer_LastPlaytimeStatsTimestamp = 0u;
 // uint32_t cnt123 = 0;
+static TaskHandle_t AudioPlayer_TaskHandle = nullptr;
+static constexpr uint32_t AudioPlayer_TaskStackSize = 8192u;
+static constexpr UBaseType_t AudioPlayer_TaskPriority = 3u | portPRIVILEGE_BIT;
+#if CONFIG_FREERTOS_UNICORE
+static constexpr BaseType_t AudioPlayer_TaskCore = 0;
+#else
+static constexpr BaseType_t AudioPlayer_TaskCore = (ARDUINO_RUNNING_CORE == 0) ? 1 : 0;
+#endif
 
 #ifdef BOARD_HAS_PSRAM
 class AudioCustom : public Audio {
@@ -84,6 +92,7 @@ static bool AudioPlayer_ArrSortHelper_strnatcmp(const char *a, const char *b);
 static bool AudioPlayer_ArrSortHelper_strnatcasecmp(const char *a, const char *b);
 static void AudioPlayer_SortPlaylist(Playlist *playlist);
 static void AudioPlayer_RandomizePlaylist(Playlist *playlist);
+static void AudioPlayer_Task(void *parameter);
 static size_t AudioPlayer_NvsRfidWriteWrapper(const char *_rfidCardId, const char *_track, const uint32_t _playPosition, const uint8_t _playMode, const uint16_t _trackLastPlayed, const uint16_t _numberOfTracks);
 static void AudioPlayer_ClearCover(void);
 
@@ -159,6 +168,22 @@ void AudioPlayer_Init(void) {
 	AudioPlayer_LoopInitialized = false;
 }
 
+void AudioPlayer_StartTask(void) {
+	if (AudioPlayer_TaskHandle) {
+		return;
+	}
+
+	xTaskCreatePinnedToCore(
+		AudioPlayer_Task, /* Function to implement the task */
+		"AudioPlayer_Task", /* Name of the task */
+		AudioPlayer_TaskStackSize, /* Stack size in words */
+		NULL, /* Task input parameter */
+		AudioPlayer_TaskPriority, /* Priority of the task */
+		&AudioPlayer_TaskHandle, /* Task handle. */
+		AudioPlayer_TaskCore /* Core where the task should run */
+	);
+}
+
 void AudioPlayer_Exit(void) {
 	Log_Println("shutdown audioplayer..", LOGLEVEL_NOTICE);
 	// save playtime total to NVS
@@ -173,9 +198,23 @@ void AudioPlayer_Exit(void) {
 		}
 	}
 #endif
+
+	if (AudioPlayer_TaskHandle) {
+		vTaskDelete(AudioPlayer_TaskHandle);
+		AudioPlayer_TaskHandle = nullptr;
+	}
 }
 
 static uint32_t lastPlayingTimestamp = 0;
+
+static void AudioPlayer_Task(void *parameter) {
+	(void) parameter;
+
+	for (;;) {
+		AudioPlayer_Cyclic();
+		vTaskDelay(portTICK_PERIOD_MS * 1u);
+	}
+}
 
 void AudioPlayer_Cyclic(void) {
 	AudioPlayer_HeadphoneVolumeManager();
