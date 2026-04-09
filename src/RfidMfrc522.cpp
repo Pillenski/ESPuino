@@ -88,17 +88,15 @@ void Rfid_Task(void *parameter) {
 	#ifdef PAUSE_WHEN_RFID_REMOVED
 			if (waitingForCardRemoval) {
 				bool cardStillPresent = false;
-
-				// RC522 needs a small grace period here because presence checks can sporadically fail
-				// although the card is still on the reader.
-				if (!mfrc522.PICC_IsNewCardPresent()) {
-					cardStillPresent = mfrc522.PICC_ReadCardSerial() || mfrc522.PICC_ReadCardSerial();
-				} else {
-					cardStillPresent = mfrc522.PICC_ReadCardSerial();
-				}
+				byte bufferATQA[2];
+				byte bufferSize = sizeof(bufferATQA);
+				MFRC522::StatusCode wakeupStatus = mfrc522.PICC_WakeupA(bufferATQA, &bufferSize);
+				cardStillPresent = (wakeupStatus == MFRC522::STATUS_OK || wakeupStatus == MFRC522::STATUS_COLLISION);
 
 				if (cardStillPresent) {
 					lastCardSeenTimestamp = millis();
+					mfrc522.PICC_HaltA();
+					mfrc522.PCD_StopCrypto1();
 					continue;
 				}
 
@@ -134,10 +132,10 @@ void Rfid_Task(void *parameter) {
 				continue;
 			}
 
-	#ifndef PAUSE_WHEN_RFID_REMOVED
+			// Keep the card in a well-defined state so presence checks for a card that remains on
+			// the reader work reliably with WUPA in the removal-monitoring loop.
 			mfrc522.PICC_HaltA();
 			mfrc522.PCD_StopCrypto1();
-	#endif
 
 			memcpy(cardId, mfrc522.uid.uidByte, cardIdSize);
 
