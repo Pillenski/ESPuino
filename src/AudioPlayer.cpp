@@ -1421,23 +1421,32 @@ size_t AudioPlayer_NvsRfidWriteWrapper(const char *_rfidCardId, const char *_tra
 		Log_Printf(LOGLEVEL_ERROR, modeInvalid, _playMode);
 		return 0;
 	}
+
+	if (_track == nullptr) {
+		return 0;
+	}
+
 	Led_SetPause(true); // Workaround to prevent exceptions due to Neopixel-signalisation while NVS-write
 	char prefBuf[275];
 	char trackBuf[255];
-	snprintf(trackBuf, sizeof(trackBuf) / sizeof(trackBuf[0]), _track);
+	size_t trackLength = strlen(_track);
+	const char *trackToStore = _track;
 
-	// If it's a directory we just want to play/save basename(path)
+	// For multi-track playlists, persist the parent directory instead of the current track file.
 	if (_numberOfTracks > 1) {
-		const char s = '/';
-		const char *last = strrchr(_track, s);
-		const char *first = strchr(_track, s);
-		unsigned long substr = last - first + 1;
-		if (substr <= sizeof(trackBuf) / sizeof(trackBuf[0])) {
-			snprintf(trackBuf, substr, _track); // save substring basename(_track)
-		} else {
-			return 0; // Filename too long!
+		const char *lastSlash = strrchr(_track, '/');
+		if (lastSlash != nullptr) {
+			trackLength = (lastSlash == _track) ? 1u : static_cast<size_t>(lastSlash - _track);
 		}
 	}
+
+	if (trackLength >= sizeof(trackBuf)) {
+		Led_SetPause(false);
+		return 0; // Filename too long!
+	}
+
+	memcpy(trackBuf, trackToStore, trackLength);
+	trackBuf[trackLength] = '\0';
 
 	snprintf(prefBuf, sizeof(prefBuf) / sizeof(prefBuf[0]), "%s%s%s%" PRIu32 "%s%d%s%" PRIu16, stringDelimiter, trackBuf, stringDelimiter, _playPosition, stringDelimiter, _playMode, stringDelimiter, _trackLastPlayed);
 	Log_Printf(LOGLEVEL_INFO, wroteLastTrackToNvs, prefBuf, _rfidCardId, _playMode, _trackLastPlayed);
