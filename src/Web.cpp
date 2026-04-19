@@ -118,6 +118,16 @@ static void releaseExplorerUpload(AsyncWebServerRequest *request) {
 		xSemaphoreGive(explorerUploadMutex);
 	}
 }
+
+static void releaseExplorerUploadOwner() {
+	if (explorerUploadOwner == nullptr) {
+		return;
+	}
+	explorerUploadOwner = nullptr;
+	if (explorerUploadMutex != NULL) {
+		xSemaphoreGive(explorerUploadMutex);
+	}
+}
 static TaskHandle_t sdCardTestTaskHandle;
 
 typedef struct {
@@ -1731,16 +1741,14 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			handleUploadError(request, 409);
 			return;
 		}
-		explorerUploadOwner = request;
-		request->onDisconnect([request]() {
-			if (explorerUploadOwner == request) {
-				if (fileStorageTaskHandle != NULL) {
-					xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
+			explorerUploadOwner = request;
+			request->onDisconnect([request]() {
+				if (explorerUploadOwner == request) {
+					if (fileStorageTaskHandle != NULL) {
+						xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
+					}
 				}
-				destroyDoubleBuffer();
-				releaseExplorerUpload(request);
-			}
-		});
+			});
 
 		String utf8Folder = "/";
 		String utf8FilePath;
@@ -1935,6 +1943,7 @@ void explorerHandleFileStorageTask(void *parameter) {
 				Rfid_TaskResume();
 				// destroy double buffer memory, since the upload was interrupted
 				destroyDoubleBuffer();
+				releaseExplorerUploadOwner();
 				fileStorageTaskHandle = NULL;
 				// just delete task without signaling (abort)
 				vTaskDelete(NULL);
@@ -1949,6 +1958,7 @@ void explorerHandleFileStorageTask(void *parameter) {
 	Led_TaskResume();
 	AudioPlayer_ProcessResume();
 	Rfid_TaskResume();
+	destroyDoubleBuffer();
 	// send signal to upload function to terminate
 	xSemaphoreGive(explorerFileUploadFinished);
 	fileStorageTaskHandle = NULL;
@@ -2625,8 +2635,8 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
 		char tmpFileName[sizeof(backupUploadState.fileName)] = {0};
 		copyStringToBuffer(tmpFileName, sizeof(tmpFileName), backupUploadState.fileName);
 		backupUploadState.file.close();
-		releaseBackupUpload(request, false);
 		Web_DumpSdToNvs(tmpFileName);
+		releaseBackupUpload(request, false);
 	}
 }
 
