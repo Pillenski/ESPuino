@@ -121,7 +121,8 @@ void Rfid_PreferenceLookupHandler(void) {
 	rfidStatus = xQueueReceive(gRfidCardQueue, &rfidTagId, 0);
 	if (rfidStatus == pdPASS) {
 		System_UpdateActivityTimer();
-		strncpy(gCurrentRfidTagId, rfidTagId, cardIdStringSize - 1);
+		rfidTagId[cardIdStringSize - 1] = '\0';
+		copyStringToBuffer(gCurrentRfidTagId, sizeof(gCurrentRfidTagId), rfidTagId);
 		Log_Printf(LOGLEVEL_INFO, "%s: %s", rfidTagReceived, gCurrentRfidTagId);
 		Web_SendWebsocketData(0, WebsocketCodeType::CurrentRfid); // Push new rfidTagId to all websocket-clients
 		String s = "-1";
@@ -136,41 +137,24 @@ void Rfid_PreferenceLookupHandler(void) {
 			return;
 		}
 
-		char *token;
-		uint8_t i = 1;
-		token = strtok((char *) s.c_str(), stringDelimiter);
-		while (token != NULL) { // Try to extract data from string after lookup
-			if (i == 1) {
-				strncpy(_file, token, sizeof(_file) / sizeof(_file[0]));
-			} else if (i == 2) {
-				_lastPlayPos = strtoul(token, NULL, 10);
-			} else if (i == 3) {
-				_playMode = strtoul(token, NULL, 10);
-			} else if (i == 4) {
-				_trackLastPlayed = strtoul(token, NULL, 10);
-			}
-			i++;
-			token = strtok(NULL, stringDelimiter);
-		}
-
-		if (i != 5) {
+		if (!parseRfidPreferenceEntry(s, _file, sizeof(_file), _lastPlayPos, _playMode, _trackLastPlayed)) {
 			Log_Println(errorOccuredNvs, LOGLEVEL_ERROR);
 			System_IndicateError();
 		} else {
-			// Only pass file to queue if strtok revealed 3 items
+			// Only pass file to queue if the serialized entry could be parsed successfully
 			if (_playMode >= 100) {
 				// Modification-cards can change some settings (e.g. introducing track-looping or sleep after track/playlist).
 				Cmd_Action(_playMode);
 			} else {
-	#ifdef DONT_ACCEPT_SAME_RFID_TWICE_ENABLE
+		#ifdef DONT_ACCEPT_SAME_RFID_TWICE_ENABLE
 				if (strncmp(gCurrentRfidTagId, gOldRfidTagId, 12) == 0) {
 					Log_Printf(LOGLEVEL_ERROR, dontAccepctSameRfid, gCurrentRfidTagId);
 					// System_IndicateError(); // Enable to have shown error @neopixel every time
 					return;
 				} else {
-					strncpy(gOldRfidTagId, gCurrentRfidTagId, 12);
+					copyStringToBuffer(gOldRfidTagId, sizeof(gOldRfidTagId), gCurrentRfidTagId);
 				}
-	#endif
+		#endif
 	#ifdef MQTT_ENABLE
 				publishMqtt(topicRfidState, gCurrentRfidTagId, false);
 	#endif
@@ -191,7 +175,7 @@ void Rfid_PreferenceLookupHandler(void) {
 
 #ifdef DONT_ACCEPT_SAME_RFID_TWICE_ENABLE
 void Rfid_ResetOldRfid() {
-	strncpy(gOldRfidTagId, "X", cardIdStringSize - 1);
+	copyStringToBuffer(gOldRfidTagId, sizeof(gOldRfidTagId), "X");
 }
 #endif
 

@@ -683,7 +683,7 @@ static void AudioPlayer_Process(void) {
 			// If we're in audiobook-mode and apply a modification-card, we don't
 			// want to save lastPlayPosition for the mod-card but for the card that holds the playlist
 			if (strlen(gCurrentRfidTagId) > 0) {
-				strncpy(gPlayProperties.playRfidTag, gCurrentRfidTagId, sizeof(gPlayProperties.playRfidTag) / sizeof(gPlayProperties.playRfidTag[0]));
+				copyStringToBuffer(gPlayProperties.playRfidTag, sizeof(gPlayProperties.playRfidTag), gCurrentRfidTagId);
 			}
 		}
 		if (gPlayProperties.trackFinished) {

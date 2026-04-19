@@ -4,6 +4,7 @@
 #include "Mqtt.h"
 
 #include "AudioPlayer.h"
+#include "Common.h"
 #include "Led.h"
 #include "Log.h"
 #include "MemX.h"
@@ -324,8 +325,11 @@ void Mqtt_ClientCallback(const char *topic, const byte *payload, uint32_t length
 	}
 	// New track to play? Take RFID-ID as input
 	else if (strcmp_P(topic, topicRfidCmnd) == 0) {
-		if (receivedString.size() >= (cardIdStringSize - 1)) {
-			xQueueSend(gRfidCardQueue, receivedString.data(), 0);
+		if (receivedString.size() == (cardIdStringSize - 1)) {
+			char rfidTagId[cardIdStringSize] = {0};
+			if (copyDelimitedTokenToBuffer(receivedString.data(), receivedString.data() + receivedString.size(), rfidTagId, sizeof(rfidTagId))) {
+				xQueueSend(gRfidCardQueue, rfidTagId, 0);
+			}
 		} else {
 			System_IndicateError();
 		}

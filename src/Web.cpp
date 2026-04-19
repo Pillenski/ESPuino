@@ -42,6 +42,14 @@ typedef struct {
 	char nvsEntry[275];
 } nvs_t;
 
+struct BackupUploadState {
+	SemaphoreHandle_t mutex = NULL;
+	AsyncWebServerRequest *owner = nullptr;
+	File file;
+	size_t fileIndex = 0;
+	char fileName[13] = {0};
+};
+
 AsyncWebServer wServer(80);
 AsyncWebSocket ws("/ws");
 AsyncEventSource events("/events");
@@ -68,6 +76,48 @@ static SemaphoreHandle_t explorerFileUploadFinished;
 static TaskHandle_t fileStorageTaskHandle;
 static SemaphoreHandle_t playlistSnapshotMutex;
 static SemaphoreHandle_t sdCardTestStatusMutex;
+static SemaphoreHandle_t explorerUploadMutex;
+static AsyncWebServerRequest *explorerUploadOwner;
+static BackupUploadState backupUploadState;
+
+static bool ensureMutex(SemaphoreHandle_t &mutex) {
+	if (mutex == NULL) {
+		mutex = xSemaphoreCreateMutex();
+	}
+	return mutex != NULL;
+}
+
+static void clearRequestTempObject(AsyncWebServerRequest *request) {
+	if (request->_tempObject != NULL) {
+		free(request->_tempObject);
+		request->_tempObject = NULL;
+	}
+}
+
+static void releaseBackupUpload(AsyncWebServerRequest *request, bool closeFile = true) {
+	if (backupUploadState.owner != request) {
+		return;
+	}
+	if (closeFile && backupUploadState.file) {
+		backupUploadState.file.close();
+	}
+	backupUploadState.fileIndex = 0;
+	backupUploadState.fileName[0] = '\0';
+	backupUploadState.owner = nullptr;
+	if (backupUploadState.mutex != NULL) {
+		xSemaphoreGive(backupUploadState.mutex);
+	}
+}
+
+static void releaseExplorerUpload(AsyncWebServerRequest *request) {
+	if (explorerUploadOwner != request) {
+		return;
+	}
+	explorerUploadOwner = nullptr;
+	if (explorerUploadMutex != NULL) {
+		xSemaphoreGive(explorerUploadMutex);
+	}
+}
 static TaskHandle_t sdCardTestTaskHandle;
 
 typedef struct {
@@ -419,7 +469,11 @@ void handleUploadError(AsyncWebServerRequest *request, int code) {
 		return;
 	}
 	// send the error to the client and record it in the request
-	request->_tempObject = new int(code);
+	int *errorCode = static_cast<int *>(malloc(sizeof(int)));
+	if (errorCode != NULL) {
+		*errorCode = code;
+		request->_tempObject = errorCode;
+	}
 	request->send(code);
 }
 
@@ -666,6 +720,10 @@ void webserverStart(void) {
 		// NVS-backup-upload
 		wServer.on(
 			"/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
+				if (request->_tempObject) {
+					clearRequestTempObject(request);
+					return;
+				}
 				request->send(200);
 			},
 			handleUpload);
@@ -798,8 +856,9 @@ void webserverStart(void) {
 			"/explorer", HTTP_POST, [](AsyncWebServerRequest *request) {
 				// we are finished with the upload
 				if (!request->_tempObject) {
-					request->onDisconnect([]() { destroyDoubleBuffer(); });
 					request->send(200);
+				} else {
+					clearRequestTempObject(request);
 				}
 			},
 			explorerHandleFileUpload);
@@ -1657,9 +1716,32 @@ void onWebsocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
 void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
 
 	System_UpdateActivityTimer();
+	if (request->_tempObject) {
+		return;
+	}
 
 	// New File
 	if (!index) {
+		if (!ensureMutex(explorerUploadMutex)) {
+			handleUploadError(request, 500);
+			return;
+		}
+		if (xSemaphoreTake(explorerUploadMutex, 0) != pdTRUE) {
+			Log_Println("Explorer upload rejected because another upload is already running.", LOGLEVEL_ERROR);
+			handleUploadError(request, 409);
+			return;
+		}
+		explorerUploadOwner = request;
+		request->onDisconnect([request]() {
+			if (explorerUploadOwner == request) {
+				if (fileStorageTaskHandle != NULL) {
+					xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
+				}
+				destroyDoubleBuffer();
+				releaseExplorerUpload(request);
+			}
+		});
+
 		String utf8Folder = "/";
 		String utf8FilePath;
 		if (request->hasParam("path")) {
@@ -1676,12 +1758,19 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			// we failed to allocate enough memory
 			Log_Println(unableToAllocateMem, LOGLEVEL_ERROR);
 			handleUploadError(request, 500);
+			releaseExplorerUpload(request);
 			return;
 		}
 
 		// Create Queue for receiving a signal from the store task as synchronisation
 		if (explorerFileUploadFinished == NULL) {
 			explorerFileUploadFinished = xSemaphoreCreateBinary();
+			if (explorerFileUploadFinished == NULL) {
+				destroyDoubleBuffer();
+				handleUploadError(request, 500);
+				releaseExplorerUpload(request);
+				return;
+			}
 		}
 
 		// reset buffers
@@ -1694,7 +1783,13 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 
 		// Create Task for handling the storage of the data
 		const char *filePathCopy = x_strdup(filePath);
-		xTaskCreatePinnedToCore(
+		if (filePathCopy == NULL) {
+			destroyDoubleBuffer();
+			handleUploadError(request, 500);
+			releaseExplorerUpload(request);
+			return;
+		}
+		if (xTaskCreatePinnedToCore(
 			explorerHandleFileStorageTask, /* Function to implement the task */
 			"fileStorageTask", /* Name of the task */
 			4000, /* Stack size in words */
@@ -1702,14 +1797,17 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			2 | portPRIVILEGE_BIT, /* Priority of the task */
 			&fileStorageTaskHandle, /* Task handle. */
 			ARDUINO_RUNNING_CORE /* Core where the task should run */
-		);
+		) != pdPASS) {
+			free((void *) filePathCopy);
+			destroyDoubleBuffer();
+			handleUploadError(request, 500);
+			releaseExplorerUpload(request);
+			return;
+		}
 
-		// register for early disconnect events
-		request->onDisconnect([]() {
-			// client went away before we were finished...
-			// trigger task suicide, since we can not use Log_Println here
-			xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
-		});
+	} else if (explorerUploadOwner != request) {
+		handleUploadError(request, 409);
+		return;
 	}
 
 	if (len) {
@@ -1755,6 +1853,7 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 		xTaskNotify(fileStorageTaskHandle, 1u, eSetValueWithOverwrite);
 		// watit until the storage task is sending the signal to finish
 		xSemaphoreTake(explorerFileUploadFinished, portMAX_DELAY);
+		releaseExplorerUpload(request);
 	}
 }
 
@@ -1836,6 +1935,7 @@ void explorerHandleFileStorageTask(void *parameter) {
 				Rfid_TaskResume();
 				// destroy double buffer memory, since the upload was interrupted
 				destroyDoubleBuffer();
+				fileStorageTaskHandle = NULL;
 				// just delete task without signaling (abort)
 				vTaskDelete(NULL);
 				return;
@@ -1851,6 +1951,7 @@ void explorerHandleFileStorageTask(void *parameter) {
 	Rfid_TaskResume();
 	// send signal to upload function to terminate
 	xSemaphoreGive(explorerFileUploadFinished);
+	fileStorageTaskHandle = NULL;
 	vTaskDelete(NULL);
 }
 
@@ -2285,21 +2386,8 @@ static bool tagIdToJSON(const String tagId, JsonObject entry) {
 	uint32_t _lastPlayPos = 0;
 	uint16_t _trackLastPlayed = 0;
 	uint32_t _mode = 1;
-	char *token;
-	uint8_t i = 1;
-	token = strtok((char *) s.c_str(), stringDelimiter);
-	while (token != NULL) { // Try to extract data from string after lookup
-		if (i == 1) {
-			strncpy(_file, token, sizeof(_file) / sizeof(_file[0]));
-		} else if (i == 2) {
-			_lastPlayPos = strtoul(token, NULL, 10);
-		} else if (i == 3) {
-			_mode = strtoul(token, NULL, 10);
-		} else if (i == 4) {
-			_trackLastPlayed = strtoul(token, NULL, 10);
-		}
-		i++;
-		token = strtok(NULL, stringDelimiter);
+	if (!parseRfidPreferenceEntry(s, _file, sizeof(_file), _lastPlayPos, _mode, _trackLastPlayed)) {
+		return false;
 	}
 	entry["id"] = tagId;
 	if (_mode >= 100) {
@@ -2356,7 +2444,6 @@ static void handleGetRFIDRequest(AsyncWebServerRequest *request) {
 	bool idsOnly = request->hasParam("ids-only");
 
 	std::vector<String> nvsKeys {};
-	static size_t nvsIndex;
 	nvsKeys.clear();
 	// Dumps all RFID-keys from NVS into key array
 	listNVSKeys("rfidTags", &nvsKeys, DumpNvsToArrayCallback);
@@ -2366,36 +2453,49 @@ static void handleGetRFIDRequest(AsyncWebServerRequest *request) {
 		return;
 	}
 	// construct chunked repsonse
-	nvsIndex = 0;
 	AsyncWebServerResponse *response = request->beginChunkedResponse("application/json",
-		[nvsKeys = std::move(nvsKeys), idsOnly](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+		[nvsKeys = std::move(nvsKeys), idsOnly, nvsIndex = size_t {0}](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
 			maxLen = maxLen >> 1; // some sort of bug with actual size available, reduce the len
+			if (maxLen == 0) {
+				return 0;
+			}
 			size_t len = 0;
 			String json;
+			auto appendToChunk = [&buffer, &len, maxLen](const char *data, size_t dataLen) -> bool {
+				if ((data == nullptr) || (dataLen > (maxLen - len))) {
+					return false;
+				}
+				memcpy(buffer + len, data, dataLen);
+				len += dataLen;
+				return true;
+			};
 
 			if (nvsIndex == 0) {
 				// start, write first tag
 				json = tagIdToJsonStr(nvsKeys[nvsIndex].c_str(), idsOnly);
-				if (json.length() >= maxLen) {
+				if ((json.length() + 1u) > maxLen) {
 					Log_Println("/rfid: Buffer too small", LOGLEVEL_ERROR);
 					return len;
 				}
-				len += snprintf(((char *) buffer), maxLen - len, "[%s", json.c_str());
+				appendToChunk("[", 1u);
+				appendToChunk(json.c_str(), json.length());
 				nvsIndex++;
 			}
 			while (nvsIndex < nvsKeys.size()) {
 				// write tags as long we have enough room
 				json = tagIdToJsonStr(nvsKeys[nvsIndex].c_str(), idsOnly);
-				if ((len + json.length()) >= maxLen) {
+				if ((len + 1u + json.length()) > maxLen) {
 					break;
 				}
-				len += snprintf(((char *) buffer + len), maxLen - len, ",%s", json.c_str());
+				appendToChunk(",", 1u);
+				appendToChunk(json.c_str(), json.length());
 				nvsIndex++;
 			}
 			if (nvsIndex == nvsKeys.size()) {
 				// finish
-				len += snprintf(((char *) buffer + len), maxLen - len, "]");
-				nvsIndex++;
+				if (appendToChunk("]", 1u)) {
+					nvsIndex++;
+				}
 			}
 			return len;
 		});
@@ -2475,34 +2575,58 @@ static void handleDeleteRFIDRequest(AsyncWebServerRequest *request) {
 
 // Takes stream from file-upload and writes payload into a temporary sd-file.
 void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-	static File tmpFile;
-	static size_t fileIndex = 0;
-	static char tmpFileName[13];
 	esp_task_wdt_reset();
+	if (request->_tempObject) {
+		return;
+	}
 	if (!index) {
-		snprintf(tmpFileName, 13, "/_%lu", millis());
-		tmpFile = gFSystem.open(tmpFileName, FILE_WRITE);
+		if (!ensureMutex(backupUploadState.mutex)) {
+			handleUploadError(request, 500);
+			return;
+		}
+		if (xSemaphoreTake(backupUploadState.mutex, 0) != pdTRUE) {
+			Log_Println("Backup upload rejected because another upload is already running.", LOGLEVEL_ERROR);
+			handleUploadError(request, 409);
+			return;
+		}
+		backupUploadState.owner = request;
+		request->onDisconnect([request]() {
+			releaseBackupUpload(request);
+		});
+
+		snprintf(backupUploadState.fileName, sizeof(backupUploadState.fileName), "/_%lu", millis());
+		backupUploadState.fileIndex = 0;
+		backupUploadState.file = gFSystem.open(backupUploadState.fileName, FILE_WRITE);
+	} else if (backupUploadState.owner != request) {
+		handleUploadError(request, 409);
+		return;
 	} else {
-		tmpFile.seek(fileIndex);
+		backupUploadState.file.seek(backupUploadState.fileIndex);
 	}
 
-	if (!tmpFile) {
+	if (!backupUploadState.file) {
 		Log_Println(errorWritingTmpfile, LOGLEVEL_ERROR);
+		handleUploadError(request, 500);
+		releaseBackupUpload(request, false);
 		return;
 	}
 
-	size_t wrote = tmpFile.write(data, len);
+	size_t wrote = backupUploadState.file.write(data, len);
 	if (wrote != len) {
 		// we did not write all bytes --> fail
-		Log_Printf(LOGLEVEL_ERROR, "Error writing %s. Expected %u, wrote %u (error: %u)!", tmpFile.path(), len, wrote, tmpFile.getWriteError());
+		Log_Printf(LOGLEVEL_ERROR, "Error writing %s. Expected %u, wrote %u (error: %u)!", backupUploadState.file.path(), len, wrote, backupUploadState.file.getWriteError());
+		handleUploadError(request, 500);
+		releaseBackupUpload(request);
 		return;
 	}
-	fileIndex += wrote;
+	backupUploadState.fileIndex += wrote;
 
 	if (final) {
-		tmpFile.close();
+		char tmpFileName[sizeof(backupUploadState.fileName)] = {0};
+		copyStringToBuffer(tmpFileName, sizeof(tmpFileName), backupUploadState.fileName);
+		backupUploadState.file.close();
+		releaseBackupUpload(request, false);
 		Web_DumpSdToNvs(tmpFileName);
-		fileIndex = 0;
 	}
 }
 
@@ -2510,11 +2634,8 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
 void Web_DumpSdToNvs(const char *_filename) {
 	char ebuf[290];
 	uint16_t j = 0;
-	char *token;
-	bool count = false;
 	uint16_t importCount = 0;
 	uint16_t invalidCount = 0;
-	nvs_t nvsEntry[1];
 	File tmpFile = gFSystem.open(_filename);
 
 	if (!tmpFile || (tmpFile.available() < 3)) {
@@ -2533,6 +2654,7 @@ void Web_DumpSdToNvs(const char *_filename) {
 	while (tmpFile.available() > 0) {
 		if (j >= sizeof(ebuf)) {
 			Log_Println(errorReadingTmpfile, LOGLEVEL_ERROR);
+			Led_SetPause(false);
 			return;
 		}
 		char buf = tmpFile.read();
@@ -2541,26 +2663,32 @@ void Web_DumpSdToNvs(const char *_filename) {
 		} else {
 			ebuf[j] = '\0';
 			j = 0;
-			token = strtok(ebuf, stringOuterDelimiter);
+			nvs_t parsedEntry = {};
+			uint8_t tokenCount = 0;
+			bool lineValid = true;
+			char *token = strtok(ebuf, stringOuterDelimiter);
 			while (token != NULL) {
-				if (!count) {
-					count = true;
-					memcpy(nvsEntry[0].nvsKey, token, strlen(token));
-					nvsEntry[0].nvsKey[strlen(token)] = '\0';
-				} else {
-					count = false;
+				tokenCount++;
+				if (tokenCount == 1u) {
+					lineValid = copyStringToBuffer(parsedEntry.nvsKey, sizeof(parsedEntry.nvsKey), token);
+				} else if (tokenCount == 2u) {
 					if (isUtf8) {
-						memcpy(nvsEntry[0].nvsEntry, token, strlen(token));
-						nvsEntry[0].nvsEntry[strlen(token)] = '\0';
+						lineValid = copyStringToBuffer(parsedEntry.nvsEntry, sizeof(parsedEntry.nvsEntry), token);
 					} else {
-						convertAsciiToUtf8(String(token), nvsEntry[0].nvsEntry, sizeof(nvsEntry[0].nvsEntry));
+						convertAsciiToUtf8(String(token), parsedEntry.nvsEntry, sizeof(parsedEntry.nvsEntry));
 					}
+				} else {
+					lineValid = false;
+					break;
+				}
+				if (!lineValid) {
+					break;
 				}
 				token = strtok(NULL, stringOuterDelimiter);
 			}
-			if (isNumber(nvsEntry[0].nvsKey) && nvsEntry[0].nvsEntry[0] == '#') {
-				Log_Printf(LOGLEVEL_NOTICE, writeEntryToNvs, ++importCount, nvsEntry[0].nvsKey, nvsEntry[0].nvsEntry);
-				gPrefsRfid.putString(nvsEntry[0].nvsKey, nvsEntry[0].nvsEntry);
+			if (lineValid && tokenCount == 2u && isNumber(parsedEntry.nvsKey) && parsedEntry.nvsEntry[0] == '#') {
+				Log_Printf(LOGLEVEL_NOTICE, writeEntryToNvs, ++importCount, parsedEntry.nvsKey, parsedEntry.nvsEntry);
+				gPrefsRfid.putString(parsedEntry.nvsKey, parsedEntry.nvsEntry);
 			} else {
 				invalidCount++;
 			}

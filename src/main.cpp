@@ -116,7 +116,10 @@ void recoverLastRfidPlayedFromNvs(bool force) {
 		if (!lastRfidPlayed.compareTo("-1")) {
 			Log_Println(unableToRestoreLastRfidFromNVS, LOGLEVEL_INFO);
 		} else {
-			xQueueSend(gRfidCardQueue, lastRfidPlayed.c_str(), 0);
+			char rfidTagId[cardIdStringSize] = {0};
+			if (copyStringToBuffer(rfidTagId, sizeof(rfidTagId), lastRfidPlayed.c_str())) {
+				xQueueSend(gRfidCardQueue, rfidTagId, 0);
+			}
 			gPlayLastRfIdWhenWiFiConnected = !force;
 			Log_Printf(LOGLEVEL_INFO, restoredLastRfidFromNVS, lastRfidPlayed.c_str());
 		}

@@ -1,9 +1,98 @@
 #pragma once
 
+#include <stdlib.h>
+#include <string.h>
+
 constexpr char stringDelimiter[] = "#"; // Character used to encapsulate data in linear NVS-strings (don't change)
 constexpr char stringOuterDelimiter[] = "^"; // Character used to encapsulate encapsulated data along with RFID-ID in backup-file
 
 size_t b64decode(const void *input_buffer, void *output_buffer, const size_t input_length);
+
+inline bool copyStringToBuffer(char *dst, size_t dstSize, const char *src) {
+	if (!dst || dstSize == 0) {
+		return false;
+	}
+
+	const int written = snprintf(dst, dstSize, "%s", src ? src : "");
+	return written >= 0 && static_cast<size_t>(written) < dstSize;
+}
+
+inline bool copyDelimitedTokenToBuffer(const char *start, const char *end, char *dst, size_t dstSize) {
+	if (!dst || dstSize == 0 || !start || !end || end < start) {
+		return false;
+	}
+
+	const size_t length = static_cast<size_t>(end - start);
+	if (length >= dstSize) {
+		return false;
+	}
+
+	memcpy(dst, start, length);
+	dst[length] = '\0';
+	return true;
+}
+
+inline bool parseRfidPreferenceEntry(const String &serialized, char *fileBuf, size_t fileBufSize, uint32_t &lastPlayPos, uint32_t &playMode, uint16_t &trackLastPlayed) {
+	if (!fileBuf || fileBufSize == 0) {
+		return false;
+	}
+
+	fileBuf[0] = '\0';
+	lastPlayPos = 0;
+	playMode = 1;
+	trackLastPlayed = 0;
+
+	const char delimiter = stringDelimiter[0];
+	const char *cursor = serialized.c_str();
+	uint8_t fieldCount = 0;
+	char numberBuf[16];
+
+	while (cursor && *cursor != '\0') {
+		const char *fieldStart = strchr(cursor, delimiter);
+		if (!fieldStart) {
+			break;
+		}
+		fieldStart++;
+
+		const char *fieldEnd = strchr(fieldStart, delimiter);
+		if (!fieldEnd) {
+			break;
+		}
+
+		fieldCount++;
+		switch (fieldCount) {
+			case 1:
+				if (!copyDelimitedTokenToBuffer(fieldStart, fieldEnd, fileBuf, fileBufSize)) {
+					return false;
+				}
+				break;
+			case 2:
+				if (!copyDelimitedTokenToBuffer(fieldStart, fieldEnd, numberBuf, sizeof(numberBuf))) {
+					return false;
+				}
+				lastPlayPos = strtoul(numberBuf, NULL, 10);
+				break;
+			case 3:
+				if (!copyDelimitedTokenToBuffer(fieldStart, fieldEnd, numberBuf, sizeof(numberBuf))) {
+					return false;
+				}
+				playMode = strtoul(numberBuf, NULL, 10);
+				break;
+			case 4:
+				if (!copyDelimitedTokenToBuffer(fieldStart, fieldEnd, numberBuf, sizeof(numberBuf))) {
+					return false;
+				}
+				trackLastPlayed = strtoul(numberBuf, NULL, 10);
+				break;
+			default:
+				return false;
+		}
+
+		cursor = fieldEnd;
+	}
+
+	return fieldCount == 4;
+}
 
 inline bool isNumber(const char *str) {
 	int i = 0;
