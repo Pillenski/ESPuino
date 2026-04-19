@@ -43,6 +43,8 @@ extern TwoWire i2cBusTwo;
 #ifdef RFID_READER_TYPE_PN5180
 static void Rfid_Task(void *parameter);
 TaskHandle_t rfidTaskHandle;
+// ESP-IDF expects task stack sizes in bytes, not in FreeRTOS words.
+static constexpr uint32_t RfidTaskStackSize = 2176u * sizeof(StackType_t);
 
 	#ifdef PN5180_ENABLE_LPCD
 void Rfid_EnableLpcd(void);
@@ -91,13 +93,13 @@ void Rfid_Init(void) {
 		#endif
 	#endif
 
-	xTaskCreatePinnedToCore(
-		Rfid_Task, /* Function to implement the task */
-		"rfid", /* Name of the task */
-		2176, /* Stack size in words */
-		NULL, /* Task input parameter */
-		2 | portPRIVILEGE_BIT, /* Priority of the task */
-		&rfidTaskHandle, /* Task handle. */
+		xTaskCreatePinnedToCore(
+			Rfid_Task, /* Function to implement the task */
+			"rfid", /* Name of the task */
+			RfidTaskStackSize, /* Stack size in bytes */
+			NULL, /* Task input parameter */
+			2 | portPRIVILEGE_BIT, /* Priority of the task */
+			&rfidTaskHandle, /* Task handle. */
 		ARDUINO_RUNNING_CORE /* Core where the task should run */
 	);
 }
@@ -236,25 +238,22 @@ void Rfid_Task(void *parameter) {
 		}
 
 		if (presenceUpdate.stableCardDetected) {
-			Log_Printf(LOGLEVEL_DEBUG, "RFID state -> PresentStable");
-			bool sameCardReapplied = false;
-			if (hasLastAcceptedCard && memcmp(lastAcceptedCardId, presenceTracker.stableCardId, cardIdSize) == 0) {
-				sameCardReapplied = true;
-			}
+				Log_Printf(LOGLEVEL_DEBUG, "RFID state -> PresentStable");
+				bool sameCardReapplied = false;
+				if (hasLastAcceptedCard && memcmp(lastAcceptedCardId, presenceTracker.stableCardId, cardIdSize) == 0) {
+					sameCardReapplied = true;
+				}
 
-			String hexString;
-			String cardIdString;
-			for (uint8_t i = 0u; i < cardIdSize; i++) {
-				char str[4];
-				snprintf(str, sizeof(str), "%02x%c", presenceTracker.stableCardId[i], (i < cardIdSize - 1u) ? '-' : ' ');
-				hexString += str;
-
-				char num[4];
-				snprintf(num, sizeof(num), "%03d", presenceTracker.stableCardId[i]);
-				cardIdString += num;
-			}
-			Log_Printf(LOGLEVEL_NOTICE, rfidTagDetected, hexString.c_str());
-			Log_Printf(LOGLEVEL_NOTICE, "Card type: %s", lastDetectedWas14443 ? "ISO-14443" : "ISO-15693");
+				char hexString[(cardIdSize * 3u) + 1u] = {0};
+				char cardIdString[cardIdStringSize] = {0};
+				size_t hexOffset = 0u;
+				size_t cardIdOffset = 0u;
+				for (uint8_t i = 0u; i < cardIdSize; i++) {
+					hexOffset += snprintf(hexString + hexOffset, sizeof(hexString) - hexOffset, "%02x%c", presenceTracker.stableCardId[i], (i < cardIdSize - 1u) ? '-' : ' ');
+					cardIdOffset += snprintf(cardIdString + cardIdOffset, sizeof(cardIdString) - cardIdOffset, "%03d", presenceTracker.stableCardId[i]);
+				}
+				Log_Printf(LOGLEVEL_NOTICE, rfidTagDetected, hexString);
+				Log_Printf(LOGLEVEL_NOTICE, "Card type: %s", lastDetectedWas14443 ? "ISO-14443" : "ISO-15693");
 
 	#ifdef PAUSE_WHEN_RFID_REMOVED
 		#ifdef ACCEPT_SAME_RFID_AFTER_TRACK_END
@@ -262,13 +261,13 @@ void Rfid_Task(void *parameter) {
 		#else
 			if (!sameCardReapplied) {
 		#endif
-				xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0);
-			} else if (gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
-				AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
-				Log_Println(rfidTagReapplied, LOGLEVEL_NOTICE);
-			}
+					xQueueSend(gRfidCardQueue, cardIdString, 0);
+				} else if (gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
+					AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
+					Log_Println(rfidTagReapplied, LOGLEVEL_NOTICE);
+				}
 	#else
-			xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0);
+				xQueueSend(gRfidCardQueue, cardIdString, 0);
 	#endif
 
 			memcpy(lastAcceptedCardId, presenceTracker.stableCardId, cardIdSize);

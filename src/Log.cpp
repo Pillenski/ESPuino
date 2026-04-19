@@ -6,11 +6,34 @@
 #include "LogRingBuffer.h"
 #include "MemX.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+
 static LogRingBuffer *Log_RingBuffer = NULL;
+static StaticSemaphore_t Log_MutexBuffer;
+static SemaphoreHandle_t Log_Mutex = NULL;
+
+static bool Log_CanLock() {
+	return (Log_Mutex != NULL) && (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED);
+}
+
+static void Log_Lock() {
+	if (Log_CanLock()) {
+		xSemaphoreTake(Log_Mutex, portMAX_DELAY);
+	}
+}
+
+static void Log_Unlock() {
+	if (Log_CanLock()) {
+		xSemaphoreGive(Log_Mutex);
+	}
+}
 
 void Log_Init(void) {
 	Serial.begin(115200);
 	Log_RingBuffer = new LogRingBuffer();
+	Log_Mutex = xSemaphoreCreateMutexStatic(&Log_MutexBuffer);
 }
 
 String getLoglevel(const uint8_t logLevel) {
@@ -37,16 +60,19 @@ void Log_Println(const char *_logBuffer, const uint8_t _minLogLevel) {
 	if (SERIAL_LOGLEVEL >= _minLogLevel) {
 		uint32_t ctime = millis();
 		const String sLogLevel = getLoglevel(_minLogLevel);
+		Log_Lock();
 		Serial.printf("%s [%" PRIu32 "] ", sLogLevel.c_str(), ctime);
 		Serial.println(_logBuffer);
 		Log_RingBuffer->printf("%s [%" PRIu32 "] ", sLogLevel.c_str(), ctime);
 		Log_RingBuffer->println(_logBuffer);
+		Log_Unlock();
 	}
 }
 
 /* Wrapper-function for serial-logging (without newline) */
 void Log_Print(const char *_logBuffer, const uint8_t _minLogLevel, bool printTimestamp) {
 	if (SERIAL_LOGLEVEL >= _minLogLevel) {
+		Log_Lock();
 		if (printTimestamp) {
 			uint32_t ctime = millis();
 			const String sLogLevel = getLoglevel(_minLogLevel);
@@ -57,6 +83,7 @@ void Log_Print(const char *_logBuffer, const uint8_t _minLogLevel, bool printTim
 			Serial.print(_logBuffer);
 		}
 		Log_RingBuffer->print(_logBuffer);
+		Log_Unlock();
 	}
 }
 
