@@ -56,7 +56,7 @@ inline bool parseRfidPreferenceEntry(const String &serialized, char *fileBuf, si
 
 		const char *fieldEnd = strchr(fieldStart, delimiter);
 		if (!fieldEnd) {
-			break;
+			fieldEnd = fieldStart + strlen(fieldStart);
 		}
 
 		fieldCount++;
@@ -88,6 +88,9 @@ inline bool parseRfidPreferenceEntry(const String &serialized, char *fileBuf, si
 				return false;
 		}
 
+		if (*fieldEnd == '\0') {
+			break;
+		}
 		cursor = fieldEnd;
 	}
 
