@@ -243,24 +243,24 @@ void SdCard_Init(void) {
 	return
 #endif
 
-	#ifndef SINGLE_SPI_ENABLE
-		#ifdef SD_MMC_1BIT_MODE
-			pinMode(2, INPUT_PULLUP);
-	while (!SD_MMC.begin("/sdcard", true, false, static_cast<int>(sdCardDefaultFrequencyKHz))) {
-		#else
-			pinMode(SPISD_CS, OUTPUT);
+#ifndef SINGLE_SPI_ENABLE
+#ifdef SD_MMC_1BIT_MODE
+	pinMode(2, INPUT_PULLUP);
+	while (!SD_MMC.begin("/sdcard", true)) {
+#else
+	pinMode(SPISD_CS, OUTPUT);
 	digitalWrite(SPISD_CS, HIGH);
 	spiSD.begin(SPISD_SCK, SPISD_MISO, SPISD_MOSI, SPISD_CS);
 	spiSD.setFrequency(1000000);
 	while (!SD.begin(SPISD_CS, spiSD)) {
-	#endif
+#endif
 #else
-	#ifdef SD_MMC_1BIT_MODE
+#ifdef SD_MMC_1BIT_MODE
 	pinMode(2, INPUT_PULLUP);
-	while (!SD_MMC.begin("/sdcard", true, false, static_cast<int>(sdCardDefaultFrequencyKHz))) {
-	#else
+	while (!SD_MMC.begin("/sdcard", true)) {
+#else
 	while (!SD.begin(SPISD_CS)) {
-	#endif
+#endif
 #endif
 		Log_Println(unableToMountSd, LOGLEVEL_ERROR);
 		delay(500);
@@ -271,6 +271,13 @@ void SdCard_Init(void) {
 		}
 #endif
 	}
+
+#ifdef SD_MMC_1BIT_MODE
+	char frequencyMessage[96] = {0};
+	if (!benchmarkSetSdCardFrequency(sdCardDefaultFrequencyKHz, frequencyMessage, sizeof(frequencyMessage))) {
+		Log_Println(frequencyMessage, LOGLEVEL_ERROR);
+	}
+#endif
 }
 
 void SdCard_Exit(void) {
