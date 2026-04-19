@@ -321,6 +321,42 @@
 		"fwupdate": {
 			"title": "Mise à jour du micrologiciel",
 			"desc": "La mise à jour du micrologiciel peut être effectuée ici."
+		},
+		"sdtest": {
+			"title": "Test de carte SD",
+			"desc": "Ce test écrit un bloc de données sur la carte SD puis le relit à 20, 26 et 40 MHz. Il affiche les performances brutes en écriture et en lecture ainsi qu'un résultat de lecture vérifiée incluant la comparaison des données relues. Le test ne peut être lancé que lorsqu'aucune lecture n'est active.",
+			"size": "Taille du test",
+			"button": "Démarrer le test de carte SD",
+			"status": {
+				"idle": "Prêt.",
+				"running": "Test en cours.",
+				"success": "Test terminé.",
+				"error": "Échec du test.",
+				"unsupported": "Le test de carte SD n'est pas pris en charge par cette version."
+			},
+			"result": {
+				"size": "Taille du test",
+				"frequency": "Meilleure fréquence",
+				"writeSpeed": "Vitesse d'écriture brute",
+				"readSpeed": "Vitesse de lecture brute",
+				"verifiedReadSpeed": "Vitesse de lecture vérifiée",
+				"writeDuration": "Durée d'écriture",
+				"readDuration": "Durée de lecture brute",
+				"verifyDuration": "Durée de vérification",
+				"progress": "Progression",
+				"sweepTitle": "Résultats du balayage",
+				"sweepFrequency": "Fréquence",
+				"sweepStatus": "Statut",
+				"sweepOk": "OK",
+				"sweepFailed": "Échec",
+				"writeErrors": "Erreurs d'écriture",
+				"readErrors": "Erreurs de lecture",
+				"verifyErrors": "Erreurs de vérification"
+			},
+			"toast": {
+				"started": "Le test de carte SD a démarré.",
+				"failed": "Le test de carte SD n'a pas pu être démarré."
+			}
 		}
 	},
 	"help": {

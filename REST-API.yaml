@@ -444,6 +444,124 @@ paths:
                 properties:
                   # Include your debug information properties here.
                   null
+  /sdtest:
+    get:
+      summary: Get SD card benchmark status.
+      description: Returns the current SD card benchmark status and the last known result.
+      responses:
+        '200':
+          description: Successful response with SD card benchmark status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                    enum:
+                      - idle
+                      - running
+                      - done
+                      - error
+                      - unsupported
+                  running:
+                    type: boolean
+                  sizeMB:
+                    type: integer
+                  totalBytes:
+                    type: integer
+                  processedBytes:
+                    type: integer
+                  frequencyKHz:
+                    type: integer
+                  writeDurationMs:
+                    type: integer
+                  readDurationMs:
+                    type: integer
+                  verifyDurationMs:
+                    type: integer
+                  writeSpeedKiBs:
+                    type: number
+                    format: float
+                  readSpeedKiBs:
+                    type: number
+                    format: float
+                  verifiedReadSpeedKiBs:
+                    type: number
+                    format: float
+                  sweepEntryCount:
+                    type: integer
+                  sweepEntries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        frequencyKHz:
+                          type: integer
+                        writeDurationMs:
+                          type: integer
+                        readDurationMs:
+                          type: integer
+                        verifyDurationMs:
+                          type: integer
+                        writeSpeedKiBs:
+                          type: number
+                          format: float
+                        readSpeedKiBs:
+                          type: number
+                          format: float
+                        verifiedReadSpeedKiBs:
+                          type: number
+                          format: float
+                        writeErrors:
+                          type: integer
+                        readErrors:
+                          type: integer
+                        verifyErrors:
+                          type: integer
+                        success:
+                          type: boolean
+                        message:
+                          type: string
+                  writeErrors:
+                    type: integer
+                  readErrors:
+                    type: integer
+                  verifyErrors:
+                    type: integer
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+    post:
+      summary: Start SD card benchmark.
+      description: Starts an asynchronous SD card benchmark for the selected test size.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sizeMB:
+                  type: integer
+                  enum:
+                    - 2
+                    - 5
+                    - 10
+              required:
+                - sizeMB
+      responses:
+        '202':
+          description: Benchmark accepted and started.
+        '400':
+          description: Invalid benchmark size.
+        '409':
+          description: Benchmark already running or playback active.
+        '501':
+          description: SD card benchmark not supported by this build.
+        '507':
+          description: Not enough free SD card space for the benchmark.
   /upload:
     post:
       summary: Upload NVS backup.

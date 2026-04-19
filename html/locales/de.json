@@ -321,6 +321,42 @@
 		"fwupdate": {
 			"title": "Firmware-Update",
 			"desc": "Hier kann ein Firmware-Update durchgeführt werden."
+		},
+		"sdtest": {
+			"title": "SD-Karten-Test",
+			"desc": "Mit diesem Test wird ein Datenblock auf die SD-Karte geschrieben und anschließend bei 20, 26 und 40 MHz wieder gelesen. Angezeigt werden rohe Schreib- und Lesewerte sowie ein verifizierter Lesewert inklusive Vergleich des gelesenen Inhalts. Der Test kann nur gestartet werden, wenn gerade keine Wiedergabe aktiv ist.",
+			"size": "Testgröße",
+			"button": "SD-Karten-Test starten",
+			"status": {
+				"idle": "Bereit.",
+				"running": "Test läuft.",
+				"success": "Test abgeschlossen.",
+				"error": "Test fehlgeschlagen.",
+				"unsupported": "SD-Karten-Test wird von diesem Build nicht unterstützt."
+			},
+			"result": {
+				"size": "Testgröße",
+				"frequency": "Beste Frequenz",
+				"writeSpeed": "Rohe Schreibgeschwindigkeit",
+				"readSpeed": "Rohe Lesegeschwindigkeit",
+				"verifiedReadSpeed": "Verifizierte Lesegeschwindigkeit",
+				"writeDuration": "Schreibdauer",
+				"readDuration": "Rohe Lesedauer",
+				"verifyDuration": "Vergleichsdauer",
+				"progress": "Fortschritt",
+				"sweepTitle": "Sweep-Ergebnisse",
+				"sweepFrequency": "Frequenz",
+				"sweepStatus": "Status",
+				"sweepOk": "OK",
+				"sweepFailed": "Fehlgeschlagen",
+				"writeErrors": "Schreibfehler",
+				"readErrors": "Lesefehler",
+				"verifyErrors": "Verifikationsfehler"
+			},
+			"toast": {
+				"started": "SD-Karten-Test wurde gestartet.",
+				"failed": "SD-Karten-Test konnte nicht gestartet werden."
+			}
 		}
 	},
 	"help": {

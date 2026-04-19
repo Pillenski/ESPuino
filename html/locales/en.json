@@ -321,6 +321,42 @@
 		"fwupdate": {
 			"title": "Firmware-Update",
 			"desc": "Firmware can be updated right here."
+		},
+		"sdtest": {
+			"title": "SD Card Test",
+			"desc": "This test writes a data block to the SD card and reads it back at 20, 26 and 40 MHz. It reports raw write and read performance plus a verified read result that includes comparing the returned data. The test can only be started while playback is idle.",
+			"size": "Test size",
+			"button": "Start SD card test",
+			"status": {
+				"idle": "Ready.",
+				"running": "Test is running.",
+				"success": "Test finished.",
+				"error": "Test failed.",
+				"unsupported": "SD card test is not supported by this build."
+			},
+			"result": {
+				"size": "Test size",
+				"frequency": "Best frequency",
+				"writeSpeed": "Raw write speed",
+				"readSpeed": "Raw read speed",
+				"verifiedReadSpeed": "Verified read speed",
+				"writeDuration": "Write duration",
+				"readDuration": "Raw read duration",
+				"verifyDuration": "Verification duration",
+				"progress": "Progress",
+				"sweepTitle": "Sweep results",
+				"sweepFrequency": "Frequency",
+				"sweepStatus": "Status",
+				"sweepOk": "OK",
+				"sweepFailed": "Failed",
+				"writeErrors": "Write errors",
+				"readErrors": "Read errors",
+				"verifyErrors": "Verification errors"
+			},
+			"toast": {
+				"started": "SD card test started.",
+				"failed": "SD card test could not be started."
+			}
 		}
 	},
 	"help": {

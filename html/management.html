@@ -1259,6 +1259,75 @@
 				</span>
 				<hr>
 			</div>
+			<div class="container" id="sdCardTest">
+				<legend data-i18n="tools.sdtest.title"></legend>
+				<p data-i18n="tools.sdtest.desc"></p>
+				<div class="row g-3 align-items-end">
+					<div class="col-md-4">
+						<label for="sdCardTestSize" class="form-label" data-i18n="tools.sdtest.size"></label>
+						<select class="form-select" id="sdCardTestSize">
+							<option value="2">2 MB</option>
+							<option value="5" selected>5 MB</option>
+							<option value="10">10 MB</option>
+						</select>
+					</div>
+					<div class="col-md-4">
+						<button type="button" class="btn btn-primary" id="sdCardTestButton"
+							onclick="startSdCardTest()" data-i18n="tools.sdtest.button"></button>
+					</div>
+				</div>
+				<p class="mt-3 mb-3" id="sdCardTestStatusMessage" data-i18n="tools.sdtest.status.idle"></p>
+				<div class="row g-2">
+					<div class="col-md-6">
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.size"></strong>: <span
+								id="sdCardTestResultSize">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.frequency"></strong>: <span
+								id="sdCardTestFrequency">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.writeSpeed"></strong>: <span
+								id="sdCardTestWriteSpeed">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.readSpeed"></strong>: <span
+								id="sdCardTestReadSpeed">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.verifiedReadSpeed"></strong>: <span
+								id="sdCardTestVerifiedReadSpeed">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.writeDuration"></strong>: <span
+								id="sdCardTestWriteDuration">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.readDuration"></strong>: <span
+								id="sdCardTestReadDuration">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.verifyDuration"></strong>: <span
+								id="sdCardTestVerifyDuration">--</span></p>
+					</div>
+					<div class="col-md-6">
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.progress"></strong>: <span
+								id="sdCardTestProgress">--</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.writeErrors"></strong>: <span
+								id="sdCardTestWriteErrors">0</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.readErrors"></strong>: <span
+								id="sdCardTestReadErrors">0</span></p>
+						<p class="mb-1"><strong data-i18n="tools.sdtest.result.verifyErrors"></strong>: <span
+								id="sdCardTestVerifyErrors">0</span></p>
+					</div>
+				</div>
+				<p class="mt-3 mb-2"><strong data-i18n="tools.sdtest.result.sweepTitle"></strong></p>
+				<div class="table-responsive">
+					<table class="table table-sm align-middle">
+						<thead>
+							<tr>
+								<th data-i18n="tools.sdtest.result.sweepFrequency"></th>
+								<th data-i18n="tools.sdtest.result.writeSpeed"></th>
+								<th data-i18n="tools.sdtest.result.readSpeed"></th>
+								<th data-i18n="tools.sdtest.result.verifiedReadSpeed"></th>
+								<th data-i18n="tools.sdtest.result.sweepStatus"></th>
+							</tr>
+						</thead>
+						<tbody id="sdCardTestSweepResults">
+							<tr>
+								<td colspan="5">--</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<hr>
+			</div>
 			<div class="container" id="httpUpdate">
 				<legend id="legendfwupdate" data-i18n="tools.fwupdate.title"></legend>
 				<form id="firmwareUploadForm" method="POST" enctype="multipart/form-data" action="/update">
@@ -1305,6 +1374,8 @@
 		var pingInterval = null;
 		var trackProgressPollTimeout = null;
 		var trackProgressRequestInFlight = false;
+		var sdCardTestPollTimeout = null;
+		var sdCardTestStatus = null;
 		/* show active / selected tab */
 		$('#nav-tab.nav-tabs a').on('shown.bs.tab', function (e) {
 			ActiveTab = $(e.target).attr('id');
@@ -1409,6 +1480,9 @@
 			document.querySelector('#langSel').value = lng;
 			if (localize) {
 				localize('body');
+			}
+			if (sdCardTestStatus) {
+				renderSdCardTestStatus(sdCardTestStatus);
 			}
 			document.querySelector('#menu').classList.remove("show") // Hide the menu again
 		});
@@ -2507,9 +2581,176 @@
 			}
 		}
 
+		function stopSdCardTestPolling() {
+			if (sdCardTestPollTimeout !== null) {
+				clearTimeout(sdCardTestPollTimeout);
+				sdCardTestPollTimeout = null;
+			}
+		}
+
+		function scheduleSdCardTestPoll(delayMs) {
+			if (sdCardTestPollTimeout !== null || ActiveTab !== 'nav-tools-tab') {
+				return;
+			}
+			sdCardTestPollTimeout = setTimeout(fetchSdCardTestStatus, delayMs);
+		}
+
+		function formatSdCardTestRate(rateKiBs) {
+			if (!Number.isFinite(rateKiBs) || rateKiBs <= 0) {
+				return "--";
+			}
+			return rateKiBs.toFixed(2) + " KiB/s";
+		}
+
+		function formatSdCardTestDuration(durationMs) {
+			if (!Number.isFinite(durationMs) || durationMs <= 0) {
+				return "--";
+			}
+			return durationMs + " ms";
+		}
+
+		function formatSdCardTestFrequency(frequencyKHz) {
+			if (!Number.isFinite(frequencyKHz) || frequencyKHz <= 0) {
+				return "--";
+			}
+			return (frequencyKHz / 1000).toFixed(0) + " MHz";
+		}
+
+		function formatSdCardTestProgress(processedBytes, totalBytes) {
+			if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+				return "--";
+			}
+			const processedMB = processedBytes / (1024 * 1024);
+			const totalMB = totalBytes / (1024 * 1024);
+			return processedMB.toFixed(2) + " / " + totalMB.toFixed(2) + " MB";
+		}
+
+		function renderSdCardTestStatus(data) {
+			sdCardTestStatus = data;
+			const button = document.getElementById('sdCardTestButton');
+			const sizeSelect = document.getElementById('sdCardTestSize');
+			const statusMessage = document.getElementById('sdCardTestStatusMessage');
+			const resultSize = document.getElementById('sdCardTestResultSize');
+			const frequency = document.getElementById('sdCardTestFrequency');
+			const writeSpeed = document.getElementById('sdCardTestWriteSpeed');
+			const readSpeed = document.getElementById('sdCardTestReadSpeed');
+			const verifiedReadSpeed = document.getElementById('sdCardTestVerifiedReadSpeed');
+			const writeDuration = document.getElementById('sdCardTestWriteDuration');
+			const readDuration = document.getElementById('sdCardTestReadDuration');
+			const verifyDuration = document.getElementById('sdCardTestVerifyDuration');
+			const progress = document.getElementById('sdCardTestProgress');
+			const writeErrors = document.getElementById('sdCardTestWriteErrors');
+			const readErrors = document.getElementById('sdCardTestReadErrors');
+			const verifyErrors = document.getElementById('sdCardTestVerifyErrors');
+			const sweepResults = document.getElementById('sdCardTestSweepResults');
+
+			const running = !!(data && data.running);
+			const unsupported = !!(data && data.state === "unsupported");
+			button.disabled = running || unsupported;
+			sizeSelect.disabled = running || unsupported;
+
+			let stateText = i18next.t("tools.sdtest.status.idle");
+			if (data && data.state) {
+				switch (data.state) {
+					case "running":
+						stateText = i18next.t("tools.sdtest.status.running");
+						break;
+					case "done":
+						stateText = data.success ? i18next.t("tools.sdtest.status.success") : i18next.t("tools.sdtest.status.error");
+						break;
+					case "error":
+						stateText = i18next.t("tools.sdtest.status.error");
+						break;
+					case "unsupported":
+						stateText = i18next.t("tools.sdtest.status.unsupported");
+						break;
+					default:
+						stateText = i18next.t("tools.sdtest.status.idle");
+				}
+			}
+			if (data && data.message) {
+				stateText += " " + data.message;
+			}
+			statusMessage.textContent = stateText.trim();
+
+			resultSize.textContent = (data && data.sizeMB) ? (data.sizeMB + " MB") : "--";
+			frequency.textContent = data ? formatSdCardTestFrequency(data.frequencyKHz) : "--";
+			writeSpeed.textContent = data ? formatSdCardTestRate(data.writeSpeedKiBs) : "--";
+			readSpeed.textContent = data ? formatSdCardTestRate(data.readSpeedKiBs) : "--";
+			verifiedReadSpeed.textContent = data ? formatSdCardTestRate(data.verifiedReadSpeedKiBs) : "--";
+			writeDuration.textContent = data ? formatSdCardTestDuration(data.writeDurationMs) : "--";
+			readDuration.textContent = data ? formatSdCardTestDuration(data.readDurationMs) : "--";
+			verifyDuration.textContent = data ? formatSdCardTestDuration(data.verifyDurationMs) : "--";
+			progress.textContent = data ? formatSdCardTestProgress(data.processedBytes, data.totalBytes) : "--";
+			writeErrors.textContent = (data && Number.isFinite(data.writeErrors)) ? data.writeErrors : "0";
+			readErrors.textContent = (data && Number.isFinite(data.readErrors)) ? data.readErrors : "0";
+			verifyErrors.textContent = (data && Number.isFinite(data.verifyErrors)) ? data.verifyErrors : "0";
+
+			const entries = (data && Array.isArray(data.sweepEntries)) ? data.sweepEntries : [];
+			if (entries.length === 0) {
+				sweepResults.innerHTML = "<tr><td colspan=\"5\">--</td></tr>";
+				return;
+			}
+
+			sweepResults.innerHTML = entries.map(entry => {
+				let entryStatus = entry && entry.success ? i18next.t("tools.sdtest.result.sweepOk") : i18next.t("tools.sdtest.result.sweepFailed");
+				if (entry && entry.message && !entry.success) {
+					entryStatus += ": " + entry.message;
+				}
+				return "<tr>"
+					+ "<td>" + formatSdCardTestFrequency(entry.frequencyKHz) + "</td>"
+					+ "<td>" + formatSdCardTestRate(entry.writeSpeedKiBs) + "</td>"
+					+ "<td>" + formatSdCardTestRate(entry.readSpeedKiBs) + "</td>"
+					+ "<td>" + formatSdCardTestRate(entry.verifiedReadSpeedKiBs) + "</td>"
+					+ "<td>" + entryStatus + "</td>"
+					+ "</tr>";
+			}).join("");
+		}
+
+		async function fetchSdCardTestStatus() {
+			stopSdCardTestPolling();
+			try {
+				const response = await fetch("http://" + host + "/sdtest");
+				const data = await response.json();
+				renderSdCardTestStatus(data);
+				if (data && data.state === "running") {
+					scheduleSdCardTestPoll(1000);
+				}
+			} catch (err) {
+				console.log("failed to fetch sd card benchmark status:", err);
+			}
+		}
+
+		async function startSdCardTest() {
+			const sizeMB = Number(document.getElementById('sdCardTestSize').value);
+			try {
+				const response = await fetch("http://" + host + "/sdtest", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json"
+					},
+					body: JSON.stringify({
+						sizeMB: sizeMB
+					})
+				});
+				const data = await response.json();
+				renderSdCardTestStatus(data);
+				if (response.ok) {
+					toaster.success(i18next.t("tools.sdtest.toast.started"));
+					scheduleSdCardTestPoll(1000);
+				} else {
+					toaster.error((data && data.message) ? data.message : response.statusText);
+				}
+			} catch (err) {
+				console.log("failed to start sd card benchmark:", err);
+				toaster.error(i18next.t("tools.sdtest.toast.failed"));
+			}
+		}
+
 		function onToolsTabOpened() {
 			console.log("tools tab opened!");
 			rebuildRFIDList();
+			fetchSdCardTestStatus();
 		}
 		const config = {
 			attributes: true
@@ -2522,6 +2763,7 @@
 				onToolsTabOpened();
 			} else {
 				toolsTabActive = false;
+				stopSdCardTestPolling();
 			}
 		})
 		toolsTabObserver.observe(toolsTab, config);

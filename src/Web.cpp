@@ -22,15 +22,18 @@
 #include "SdCard.h"
 #include "System.h"
 #include "Wlan.h"
+#include "values.h"
 #include "freertos/ringbuf.h"
 #include "freertos/semphr.h"
 #include "revision.h"
 #include "soc/timer_group_reg.h"
 #include "soc/timer_group_struct.h"
 
+#include <cstring>
 #include <Update.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
+#include <memory>
 #include <nvs.h>
 #include <vector>
 
@@ -64,6 +67,8 @@ uint32_t index_buffer_read = 0;
 static SemaphoreHandle_t explorerFileUploadFinished;
 static TaskHandle_t fileStorageTaskHandle;
 static SemaphoreHandle_t playlistSnapshotMutex;
+static SemaphoreHandle_t sdCardTestStatusMutex;
+static TaskHandle_t sdCardTestTaskHandle;
 
 typedef struct {
 	uint16_t trackNumber;
@@ -71,8 +76,43 @@ typedef struct {
 	String path;
 } playlistSnapshotEntry_t;
 
+enum class SdCardTestState : uint8_t {
+	Idle = 0,
+	Running,
+	Done,
+	Error,
+	Unsupported,
+};
+
+typedef struct {
+	SdCardTestState state = SdCardTestState::Idle;
+	bool running = false;
+	uint32_t sizeMB = 0;
+	uint32_t totalBytes = 0;
+	uint32_t processedBytes = 0;
+	uint32_t frequencyKHz = 0;
+	uint32_t writeDurationMs = 0;
+	uint32_t readDurationMs = 0;
+	uint32_t verifyDurationMs = 0;
+	float writeSpeedKiBs = 0.f;
+	float readSpeedKiBs = 0.f;
+	float verifiedReadSpeedKiBs = 0.f;
+	uint8_t sweepEntryCount = 0;
+	SdCardBenchmarkSweepEntry sweepEntries[sdCardBenchmarkMaxSweepEntries] = {};
+	uint32_t writeErrors = 0;
+	uint32_t readErrors = 0;
+	uint32_t verifyErrors = 0;
+	bool success = false;
+	char message[160] = {0};
+} sdCardTestStatus_t;
+
+typedef struct {
+	uint32_t sizeBytes;
+} sdCardTestTaskArgs_t;
+
 static uint32_t playlistSnapshotRevision = 0;
 static std::vector<playlistSnapshotEntry_t> playlistSnapshotEntries;
+static sdCardTestStatus_t sdCardTestStatus;
 
 void Web_DumpSdToNvs(const char *_filename);
 static void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
@@ -93,6 +133,8 @@ static void handleGetActiveSSID(AsyncWebServerRequest *request);
 static void handleGetWiFiConfig(AsyncWebServerRequest *request);
 static void handlePostWiFiConfig(AsyncWebServerRequest *request, JsonVariant &json);
 static void handleCoverImageRequest(AsyncWebServerRequest *request);
+static void handleGetSdCardTestRequest(AsyncWebServerRequest *request);
+static void handlePostSdCardTestRequest(AsyncWebServerRequest *request, JsonVariant &json);
 static void handleWiFiScanRequest(AsyncWebServerRequest *request);
 static void handleGetRFIDRequest(AsyncWebServerRequest *request);
 static void handlePostRFIDRequest(AsyncWebServerRequest *request, JsonVariant &json);
@@ -111,6 +153,13 @@ static bool lockPlaylistSnapshot(void);
 static void unlockPlaylistSnapshot(void);
 static String getPlaylistDisplayName(const char *path);
 static size_t getPlaylistSnapshotCount(void);
+static bool lockSdCardTestStatus(void);
+static void unlockSdCardTestStatus(void);
+static const char *sdCardTestStateToString(SdCardTestState state);
+static void sdCardTestStatusToJson(JsonObject obj);
+static void sendSdCardTestResponse(AsyncWebServerRequest *request, int statusCode);
+static void sdCardTestProgressCallback(SdCardBenchmarkPhase phase, uint32_t processedBytes, uint32_t totalBytes, uint32_t frequencyKHz, void *userData);
+static void sdCardTestTask(void *parameter);
 
 // IPAddress converters, for a description see: https://arduinojson.org/news/2021/05/04/version-6-18-0/
 void convertFromJson(JsonVariantConst src, IPAddress &dst) {
@@ -176,6 +225,149 @@ static size_t getPlaylistSnapshotCount(void) {
 		unlockPlaylistSnapshot();
 	}
 	return count;
+}
+
+static bool lockSdCardTestStatus(void) {
+	if (!sdCardTestStatusMutex) {
+		sdCardTestStatusMutex = xSemaphoreCreateMutex();
+	}
+	return sdCardTestStatusMutex && xSemaphoreTake(sdCardTestStatusMutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void unlockSdCardTestStatus(void) {
+	if (sdCardTestStatusMutex) {
+		xSemaphoreGive(sdCardTestStatusMutex);
+	}
+}
+
+static const char *sdCardTestStateToString(SdCardTestState state) {
+	switch (state) {
+		case SdCardTestState::Running:
+			return "running";
+		case SdCardTestState::Done:
+			return "done";
+		case SdCardTestState::Error:
+			return "error";
+		case SdCardTestState::Unsupported:
+			return "unsupported";
+		case SdCardTestState::Idle:
+		default:
+			return "idle";
+	}
+}
+
+static void sdCardTestStatusToJson(JsonObject obj) {
+	if (!lockSdCardTestStatus()) {
+		obj["state"] = "error";
+		obj["running"] = false;
+		obj["success"] = false;
+		obj["message"] = "Unable to acquire SD benchmark status.";
+		return;
+	}
+
+	obj["state"] = sdCardTestStateToString(sdCardTestStatus.state);
+	obj["running"] = sdCardTestStatus.running;
+	obj["sizeMB"] = sdCardTestStatus.sizeMB;
+	obj["totalBytes"] = sdCardTestStatus.totalBytes;
+	obj["processedBytes"] = sdCardTestStatus.processedBytes;
+	obj["frequencyKHz"] = sdCardTestStatus.frequencyKHz;
+	obj["writeDurationMs"] = sdCardTestStatus.writeDurationMs;
+	obj["readDurationMs"] = sdCardTestStatus.readDurationMs;
+	obj["verifyDurationMs"] = sdCardTestStatus.verifyDurationMs;
+	obj["writeSpeedKiBs"] = sdCardTestStatus.writeSpeedKiBs;
+	obj["readSpeedKiBs"] = sdCardTestStatus.readSpeedKiBs;
+	obj["verifiedReadSpeedKiBs"] = sdCardTestStatus.verifiedReadSpeedKiBs;
+	obj["sweepEntryCount"] = sdCardTestStatus.sweepEntryCount;
+	obj["writeErrors"] = sdCardTestStatus.writeErrors;
+	obj["readErrors"] = sdCardTestStatus.readErrors;
+	obj["verifyErrors"] = sdCardTestStatus.verifyErrors;
+	obj["success"] = sdCardTestStatus.success;
+	obj["message"] = sdCardTestStatus.message;
+	JsonArray sweepEntries = obj.createNestedArray("sweepEntries");
+	for (uint8_t i = 0; i < sdCardTestStatus.sweepEntryCount && i < sdCardBenchmarkMaxSweepEntries; ++i) {
+		const SdCardBenchmarkSweepEntry &entry = sdCardTestStatus.sweepEntries[i];
+		JsonObject item = sweepEntries.createNestedObject();
+		item["frequencyKHz"] = entry.frequencyKHz;
+		item["writeDurationMs"] = entry.writeDurationMs;
+		item["readDurationMs"] = entry.readDurationMs;
+		item["verifyDurationMs"] = entry.verifyDurationMs;
+		item["writeSpeedKiBs"] = entry.writeSpeedKiBs;
+		item["readSpeedKiBs"] = entry.readSpeedKiBs;
+		item["verifiedReadSpeedKiBs"] = entry.verifiedReadSpeedKiBs;
+		item["writeErrors"] = entry.writeErrors;
+		item["readErrors"] = entry.readErrors;
+		item["verifyErrors"] = entry.verifyErrors;
+		item["success"] = entry.success;
+		item["message"] = entry.message;
+	}
+	unlockSdCardTestStatus();
+}
+
+static void sendSdCardTestResponse(AsyncWebServerRequest *request, int statusCode) {
+	AsyncJsonResponse *response = new AsyncJsonResponse(false, 3072);
+	sdCardTestStatusToJson(response->getRoot());
+	if (response->overflowed()) {
+		delete response;
+		request->send(500, "text/plain; charset=utf-8", "json buffer overflow");
+		return;
+	}
+	response->setCode(statusCode);
+	response->setLength();
+	request->send(response);
+}
+
+static void sdCardTestProgressCallback(SdCardBenchmarkPhase phase, uint32_t processedBytes, uint32_t totalBytes, uint32_t frequencyKHz, void *userData) {
+	(void) userData;
+
+	if (!lockSdCardTestStatus()) {
+		return;
+	}
+
+	sdCardTestStatus.frequencyKHz = frequencyKHz;
+	sdCardTestStatus.processedBytes = processedBytes;
+	sdCardTestStatus.totalBytes = totalBytes;
+	snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s %lu MHz: %s", "Testing", frequencyKHz / 1000UL, phase == SdCardBenchmarkPhase::Read ? "reading and verifying benchmark data..." : "writing benchmark data...");
+	unlockSdCardTestStatus();
+}
+
+static void sdCardTestTask(void *parameter) {
+	std::unique_ptr<sdCardTestTaskArgs_t> args(static_cast<sdCardTestTaskArgs_t *>(parameter));
+	SdCardBenchmarkConfig config;
+	config.sizeBytes = args ? args->sizeBytes : 0;
+	config.runFrequencySweep = true;
+	config.progressCallback = sdCardTestProgressCallback;
+	config.progressUserData = nullptr;
+
+	SdCardBenchmarkResult result;
+	const bool benchmarkOk = SdCard_RunBenchmark(config, result);
+
+	if (lockSdCardTestStatus()) {
+		sdCardTestStatus.sizeMB = config.sizeBytes / (1024 * 1024);
+		sdCardTestStatus.totalBytes = result.totalBytes;
+		sdCardTestStatus.processedBytes = result.processedBytes;
+		sdCardTestStatus.frequencyKHz = result.frequencyKHz;
+		sdCardTestStatus.writeDurationMs = result.writeDurationMs;
+		sdCardTestStatus.readDurationMs = result.readDurationMs;
+		sdCardTestStatus.verifyDurationMs = result.verifyDurationMs;
+		sdCardTestStatus.writeSpeedKiBs = result.writeSpeedKiBs;
+		sdCardTestStatus.readSpeedKiBs = result.readSpeedKiBs;
+		sdCardTestStatus.verifiedReadSpeedKiBs = result.verifiedReadSpeedKiBs;
+		sdCardTestStatus.sweepEntryCount = result.sweepEntryCount;
+		for (uint8_t i = 0; i < result.sweepEntryCount && i < sdCardBenchmarkMaxSweepEntries; ++i) {
+			sdCardTestStatus.sweepEntries[i] = result.sweepEntries[i];
+		}
+		sdCardTestStatus.writeErrors = result.writeErrors;
+		sdCardTestStatus.readErrors = result.readErrors;
+		sdCardTestStatus.verifyErrors = result.verifyErrors;
+		sdCardTestStatus.success = result.success;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.state = benchmarkOk ? SdCardTestState::Done : SdCardTestState::Error;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", result.message);
+		sdCardTestTaskHandle = nullptr;
+		unlockSdCardTestStatus();
+	}
+
+	vTaskDelete(nullptr);
 }
 
 static void destroyDoubleBuffer() {
@@ -571,6 +763,10 @@ void webserverStart(void) {
 #endif
 		// debug info
 		wServer.on("/debug", HTTP_GET, handleDebugRequest);
+
+		// SD card benchmark
+		wServer.on("/sdtest", HTTP_GET, handleGetSdCardTestRequest);
+		wServer.addHandler(new AsyncCallbackJsonWebHandler("/sdtest", handlePostSdCardTestRequest));
 
 		// erase all RFID-assignments from NVS
 		wServer.on("/rfidnvserase", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -1169,6 +1365,134 @@ void handleDebugRequest(AsyncWebServerRequest *request) {
 	}
 	response->setLength();
 	request->send(response);
+}
+
+static void handleGetSdCardTestRequest(AsyncWebServerRequest *request) {
+#ifdef NO_SDCARD
+	if (lockSdCardTestStatus()) {
+		sdCardTestStatus.state = SdCardTestState::Unsupported;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.success = false;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "SD card test is not available on this build.");
+		unlockSdCardTestStatus();
+	}
+#endif
+	sendSdCardTestResponse(request, 200);
+	System_UpdateActivityTimer();
+}
+
+static void handlePostSdCardTestRequest(AsyncWebServerRequest *request, JsonVariant &json) {
+#ifdef NO_SDCARD
+	if (lockSdCardTestStatus()) {
+		sdCardTestStatus.state = SdCardTestState::Unsupported;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.success = false;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "SD card test is not available on this build.");
+		unlockSdCardTestStatus();
+	}
+	sendSdCardTestResponse(request, 501);
+	return;
+#else
+	const JsonObject &jsonObj = json.as<JsonObject>();
+	const uint32_t sizeMB = jsonObj["sizeMB"] | 0;
+
+	if (sizeMB != 2 && sizeMB != 5 && sizeMB != 10) {
+		if (lockSdCardTestStatus()) {
+			sdCardTestStatus.state = SdCardTestState::Error;
+			sdCardTestStatus.running = false;
+			sdCardTestStatus.success = false;
+			snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Invalid benchmark size. Allowed values: 2, 5 or 10 MB.");
+			unlockSdCardTestStatus();
+		}
+		sendSdCardTestResponse(request, 400);
+		return;
+	}
+
+	if (!lockSdCardTestStatus()) {
+		request->send(500, "text/plain; charset=utf-8", "failed to lock sd card benchmark status");
+		return;
+	}
+
+	if (sdCardTestStatus.running || sdCardTestTaskHandle != nullptr) {
+		sdCardTestStatus.state = SdCardTestState::Error;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.success = false;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "An SD card benchmark is already running.");
+		unlockSdCardTestStatus();
+		sendSdCardTestResponse(request, 409);
+		return;
+	}
+
+	if (gPlayProperties.playMode != NO_PLAYLIST) {
+		sdCardTestStatus.state = SdCardTestState::Error;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.success = false;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Stop playback before starting the SD card benchmark.");
+		unlockSdCardTestStatus();
+		sendSdCardTestResponse(request, 409);
+		return;
+	}
+
+	const uint32_t sizeBytes = sizeMB * 1024UL * 1024UL;
+	if (SdCard_GetFreeSize() < sizeBytes) {
+		sdCardTestStatus.state = SdCardTestState::Error;
+		sdCardTestStatus.running = false;
+		sdCardTestStatus.success = false;
+		sdCardTestStatus.sizeMB = sizeMB;
+		snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Not enough free space for the SD card benchmark.");
+		unlockSdCardTestStatus();
+		sendSdCardTestResponse(request, 507);
+		return;
+	}
+
+	sdCardTestStatus = sdCardTestStatus_t{};
+	sdCardTestStatus.state = SdCardTestState::Running;
+	sdCardTestStatus.running = true;
+	sdCardTestStatus.sizeMB = sizeMB;
+#ifdef SD_MMC_1BIT_MODE
+	sdCardTestStatus.totalBytes = sizeBytes * 2 * sdCardBenchmarkMaxSweepEntries;
+	snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Preparing SD card frequency sweep...");
+#else
+	sdCardTestStatus.totalBytes = sizeBytes * 2;
+	snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Preparing SD card benchmark...");
+#endif
+	unlockSdCardTestStatus();
+
+	std::unique_ptr<sdCardTestTaskArgs_t> args(new (std::nothrow) sdCardTestTaskArgs_t{sizeBytes});
+	if (!args) {
+		if (lockSdCardTestStatus()) {
+			sdCardTestStatus.state = SdCardTestState::Error;
+			sdCardTestStatus.running = false;
+			snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Unable to allocate SD card benchmark task arguments.");
+			unlockSdCardTestStatus();
+		}
+		sendSdCardTestResponse(request, 500);
+		return;
+	}
+
+	if (xTaskCreatePinnedToCore(
+			sdCardTestTask,
+			"sdCardTestTask",
+			6144,
+			args.get(),
+			1 | portPRIVILEGE_BIT,
+			&sdCardTestTaskHandle,
+			ARDUINO_RUNNING_CORE) != pdPASS) {
+		if (lockSdCardTestStatus()) {
+			sdCardTestStatus.state = SdCardTestState::Error;
+			sdCardTestStatus.running = false;
+			snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Unable to start SD card benchmark task.");
+			unlockSdCardTestStatus();
+		}
+		sdCardTestTaskHandle = nullptr;
+		sendSdCardTestResponse(request, 500);
+		return;
+	}
+
+	args.release();
+	sendSdCardTestResponse(request, 202);
+	System_UpdateActivityTimer();
+#endif
 }
 
 // Takes inputs from webgui, parses JSON and saves values in NVS
