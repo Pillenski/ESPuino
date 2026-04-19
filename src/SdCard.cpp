@@ -41,6 +41,7 @@ namespace {
 		SDMMC_FREQ_26M,
 		SDMMC_FREQ_HIGHSPEED,
 	};
+	constexpr uint32_t sdCardDefaultFrequencyKHz = SDMMC_FREQ_26M;
 #endif
 
 	uint32_t benchmarkNextRandom(uint32_t &state) {
@@ -242,12 +243,12 @@ void SdCard_Init(void) {
 	return
 #endif
 
-#ifndef SINGLE_SPI_ENABLE
-	#ifdef SD_MMC_1BIT_MODE
-		pinMode(2, INPUT_PULLUP);
-	while (!SD_MMC.begin("/sdcard", true)) {
-	#else
-		pinMode(SPISD_CS, OUTPUT);
+	#ifndef SINGLE_SPI_ENABLE
+		#ifdef SD_MMC_1BIT_MODE
+			pinMode(2, INPUT_PULLUP);
+	while (!SD_MMC.begin("/sdcard", true, false, static_cast<int>(sdCardDefaultFrequencyKHz))) {
+		#else
+			pinMode(SPISD_CS, OUTPUT);
 	digitalWrite(SPISD_CS, HIGH);
 	spiSD.begin(SPISD_SCK, SPISD_MISO, SPISD_MOSI, SPISD_CS);
 	spiSD.setFrequency(1000000);
@@ -256,7 +257,7 @@ void SdCard_Init(void) {
 #else
 	#ifdef SD_MMC_1BIT_MODE
 	pinMode(2, INPUT_PULLUP);
-	while (!SD_MMC.begin("/sdcard", true)) {
+	while (!SD_MMC.begin("/sdcard", true, false, static_cast<int>(sdCardDefaultFrequencyKHz))) {
 	#else
 	while (!SD.begin(SPISD_CS)) {
 	#endif
@@ -368,7 +369,7 @@ bool SdCard_RunBenchmark(const SdCardBenchmarkConfig &config, SdCardBenchmarkRes
 	for (size_t entryIndex = 0; entryIndex < sweepCount && result.sweepEntryCount < sdCardBenchmarkMaxSweepEntries; ++entryIndex) {
 		SdCardBenchmarkSweepEntry &entry = result.sweepEntries[result.sweepEntryCount++];
 #ifdef SD_MMC_1BIT_MODE
-		const uint32_t frequencyKHz = runFrequencySweep ? benchmarkSweepFrequenciesKHz[entryIndex] : BOARD_MAX_SDMMC_FREQ;
+		const uint32_t frequencyKHz = runFrequencySweep ? benchmarkSweepFrequenciesKHz[entryIndex] : sdCardDefaultFrequencyKHz;
 		if (!benchmarkSetSdCardFrequency(frequencyKHz, entry.message, sizeof(entry.message))) {
 			entry = SdCardBenchmarkSweepEntry{};
 			entry.frequencyKHz = frequencyKHz;
@@ -387,9 +388,9 @@ bool SdCard_RunBenchmark(const SdCardBenchmarkConfig &config, SdCardBenchmarkRes
 	}
 
 #ifdef SD_MMC_1BIT_MODE
-	uint32_t restoredFrequencyKHz = BOARD_MAX_SDMMC_FREQ;
-	bool restoreOkay = benchmarkSetSdCardFrequency(BOARD_MAX_SDMMC_FREQ, result.message, sizeof(result.message));
-	if (!restoreOkay && bestEntryIndex >= 0 && result.sweepEntries[bestEntryIndex].frequencyKHz != BOARD_MAX_SDMMC_FREQ) {
+	uint32_t restoredFrequencyKHz = sdCardDefaultFrequencyKHz;
+	bool restoreOkay = benchmarkSetSdCardFrequency(sdCardDefaultFrequencyKHz, result.message, sizeof(result.message));
+	if (!restoreOkay && bestEntryIndex >= 0 && result.sweepEntries[bestEntryIndex].frequencyKHz != sdCardDefaultFrequencyKHz) {
 		restoredFrequencyKHz = result.sweepEntries[bestEntryIndex].frequencyKHz;
 		restoreOkay = benchmarkSetSdCardFrequency(restoredFrequencyKHz, result.message, sizeof(result.message));
 	}
@@ -413,8 +414,8 @@ bool SdCard_RunBenchmark(const SdCardBenchmarkConfig &config, SdCardBenchmarkRes
 	if (runFrequencySweep) {
 		if (bestEntryIndex >= 0) {
 #ifdef SD_MMC_1BIT_MODE
-			if (restoredFrequencyKHz != BOARD_MAX_SDMMC_FREQ) {
-				snprintf(result.message, sizeof(result.message), "Sweep completed. Best verified read result at %lu MHz. Default clock restore failed, keeping %lu MHz for now.", result.frequencyKHz / 1000UL, restoredFrequencyKHz / 1000UL);
+			if (restoredFrequencyKHz != sdCardDefaultFrequencyKHz) {
+				snprintf(result.message, sizeof(result.message), "Sweep completed. Best verified read result at %lu MHz. Default 26 MHz restore failed, keeping %lu MHz for now.", result.frequencyKHz / 1000UL, restoredFrequencyKHz / 1000UL);
 			} else if (successfulEntryCount < sweepCount) {
 				snprintf(result.message, sizeof(result.message), "Sweep completed with partial failures. Best verified read result at %lu MHz.", result.frequencyKHz / 1000UL);
 			} else {
