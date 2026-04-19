@@ -25,6 +25,7 @@
 extern unsigned long Rfid_LastRfidCheckTimestamp;
 TaskHandle_t rfidTaskHandle;
 static void Rfid_Task(void *parameter);
+static bool Rfid_ReadObservedCard(byte *cardId, const RfidPresenceTracker &presenceTracker);
 
 	#ifdef RFID_READER_TYPE_MFRC522_I2C
 extern TwoWire i2cBusTwo;
@@ -64,125 +65,104 @@ void Rfid_Init(void) {
 	#endif
 }
 
+bool Rfid_ReadObservedCard(byte *cardId, const RfidPresenceTracker &presenceTracker) {
+	byte bufferATQA[2];
+	byte bufferSize = sizeof(bufferATQA);
+	const MFRC522::StatusCode wakeupStatus = mfrc522.PICC_WakeupA(bufferATQA, &bufferSize);
+	const bool cardPresent = (wakeupStatus == MFRC522::STATUS_OK || wakeupStatus == MFRC522::STATUS_COLLISION);
+	if (!cardPresent) {
+		mfrc522.PICC_HaltA();
+		mfrc522.PCD_StopCrypto1();
+		return false;
+	}
+
+	bool haveObservedCardId = false;
+	if (mfrc522.PICC_ReadCardSerial()) {
+		memcpy(cardId, mfrc522.uid.uidByte, cardIdSize);
+		haveObservedCardId = true;
+	} else if (presenceTracker.hasStableCard) {
+		memcpy(cardId, presenceTracker.stableCardId, cardIdSize);
+		haveObservedCardId = true;
+	}
+
+	mfrc522.PICC_HaltA();
+	mfrc522.PCD_StopCrypto1();
+	return haveObservedCardId;
+}
+
 void Rfid_Task(void *parameter) {
-	#ifdef PAUSE_WHEN_RFID_REMOVED
-	byte lastValidcardId[cardIdSize] = {0};
-	bool hasLastValidCard = false;
-	bool waitingForCardRemoval = false;
-	uint32_t lastCardSeenTimestamp = 0;
-	#endif
+	RfidPresenceTracker presenceTracker;
+	RfidPresenceTracker_Init(presenceTracker);
+	byte lastAcceptedCardId[cardIdSize] = {0};
+	bool hasLastAcceptedCard = false;
 
 	for (;;) {
 		uint32_t pollDelayMs = (RFID_SCAN_INTERVAL / 2 >= 20) ? (RFID_SCAN_INTERVAL / 2) : 20;
-	#ifdef PAUSE_WHEN_RFID_REMOVED
-		if (waitingForCardRemoval && pollDelayMs < RFID_SCAN_INTERVAL) {
-			pollDelayMs = RFID_SCAN_INTERVAL;
-		}
-	#endif
 		vTaskDelay(portTICK_PERIOD_MS * pollDelayMs);
 
 		if ((millis() - Rfid_LastRfidCheckTimestamp) >= RFID_SCAN_INTERVAL) {
 			// Log_Printf(LOGLEVEL_DEBUG, "%u", uxTaskGetStackHighWaterMark(NULL));
 
 			Rfid_LastRfidCheckTimestamp = millis();
-	#ifdef PAUSE_WHEN_RFID_REMOVED
-			if (waitingForCardRemoval) {
-				bool cardStillPresent = false;
-				byte bufferATQA[2];
-				byte bufferSize = sizeof(bufferATQA);
-				MFRC522::StatusCode wakeupStatus = mfrc522.PICC_WakeupA(bufferATQA, &bufferSize);
-				cardStillPresent = (wakeupStatus == MFRC522::STATUS_OK || wakeupStatus == MFRC522::STATUS_COLLISION);
+			byte cardId[cardIdSize];
+			const bool observedCard = Rfid_ReadObservedCard(cardId, presenceTracker);
 
-				if (cardStillPresent) {
-					lastCardSeenTimestamp = millis();
-					mfrc522.PICC_HaltA();
-					mfrc522.PCD_StopCrypto1();
-					continue;
-				}
+			if (observedCard) {
+	#ifdef HALLEFFECT_SENSOR_ENABLE
+				cardId[cardIdSize - 1] = cardId[cardIdSize - 1] + gHallEffectSensor.waitForState(HallEffectWaitMS);
+	#endif
+			}
 
-				const uint32_t removalDebounceMs = (RFID_SCAN_INTERVAL * 3 >= 300) ? (RFID_SCAN_INTERVAL * 3) : 300;
-				if ((millis() - lastCardSeenTimestamp) < removalDebounceMs) {
-					continue;
-				}
-
+			const RfidPresenceUpdate presenceUpdate = RfidPresenceTracker_Update(presenceTracker, observedCard, observedCard ? cardId : nullptr, Rfid_LastRfidCheckTimestamp);
+			if (presenceUpdate.stableCardRemoved) {
+				Log_Printf(LOGLEVEL_DEBUG, "RFID state -> CandidateAbsent confirmed removal");
+			}
+			if (RfidPresenceTracker_ShouldPause(presenceTracker, Rfid_LastRfidCheckTimestamp)) {
 				Log_Println(rfidTagRemoved, LOGLEVEL_NOTICE);
-				if (!gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
+				if (!gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK && gPlayProperties.playMode != BUSY && gPlayProperties.playMode != NO_PLAYLIST) {
 					AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
 				}
-				mfrc522.PICC_HaltA();
-				mfrc522.PCD_StopCrypto1();
-				waitingForCardRemoval = false;
+			}
+
+			if (!presenceUpdate.stableCardDetected) {
 				continue;
 			}
-	#endif
 
-			// Reset the loop if no new card is present on the sensor/reader. This saves the entire process when idle.
-			byte cardId[cardIdSize];
-			String cardIdString;
-	#ifdef PAUSE_WHEN_RFID_REMOVED
+			Log_Printf(LOGLEVEL_DEBUG, "RFID state -> PresentStable");
 			bool sameCardReapplied = false;
-	#endif
-
-			if (!mfrc522.PICC_IsNewCardPresent()) {
-				continue;
-			}
-
-			// Select one of the cards
-			if (!mfrc522.PICC_ReadCardSerial()) {
-				continue;
-			}
-
-			// Keep the card in a well-defined state so presence checks for a card that remains on
-			// the reader work reliably with WUPA in the removal-monitoring loop.
-			mfrc522.PICC_HaltA();
-			mfrc522.PCD_StopCrypto1();
-
-			memcpy(cardId, mfrc522.uid.uidByte, cardIdSize);
-
-	#ifdef HALLEFFECT_SENSOR_ENABLE
-			cardId[cardIdSize - 1] = cardId[cardIdSize - 1] + gHallEffectSensor.waitForState(HallEffectWaitMS);
-	#endif
-
-	#ifdef PAUSE_WHEN_RFID_REMOVED
-			if (hasLastValidCard && memcmp((const void *) lastValidcardId, (const void *) cardId, sizeof(cardId)) == 0) {
+			if (hasLastAcceptedCard && memcmp(lastAcceptedCardId, presenceTracker.stableCardId, cardIdSize) == 0) {
 				sameCardReapplied = true;
 			}
-	#endif
 
 			String hexString;
+			String cardIdString;
 			for (uint8_t i = 0u; i < cardIdSize; i++) {
 				char str[4];
-				snprintf(str, sizeof(str), "%02x%c", cardId[i], (i < cardIdSize - 1u) ? '-' : ' ');
+				snprintf(str, sizeof(str), "%02x%c", presenceTracker.stableCardId[i], (i < cardIdSize - 1u) ? '-' : ' ');
 				hexString += str;
+
+				char num[4];
+				snprintf(num, sizeof(num), "%03d", presenceTracker.stableCardId[i]);
+				cardIdString += num;
 			}
 			Log_Printf(LOGLEVEL_NOTICE, rfidTagDetected, hexString.c_str());
 
-			for (uint8_t i = 0u; i < cardIdSize; i++) {
-				char num[4];
-				snprintf(num, sizeof(num), "%03d", cardId[i]);
-				cardIdString += num;
-			}
-
 	#ifdef PAUSE_WHEN_RFID_REMOVED
 		#ifdef ACCEPT_SAME_RFID_AFTER_TRACK_END
-			if (!sameCardReapplied || gPlayProperties.trackFinished || gPlayProperties.playlistFinished) { // Don't allow to send card to queue if it's the same card again if track or playlist is unfnished
+			if (!sameCardReapplied || gPlayProperties.trackFinished || gPlayProperties.playlistFinished) {
 		#else
-			if (!sameCardReapplied) { // Don't allow to send card to queue if it's the same card again...
+			if (!sameCardReapplied) {
 		#endif
 				xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0);
-			} else {
-				// If pause-button was pressed while card was not applied, playback could be active. If so: don't pause when card is reapplied again as the desired functionality would be reversed in this case.
-				if (gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
-					AudioPlayer_TrackControlToQueueSender(PAUSEPLAY); // ... play/pause instead (but not for BT)
-				}
+			} else if (gPlayProperties.pausePlay && System_GetOperationMode() != OPMODE_BLUETOOTH_SINK) {
+				AudioPlayer_TrackControlToQueueSender(PAUSEPLAY);
 			}
-			memcpy(lastValidcardId, mfrc522.uid.uidByte, cardIdSize);
-			hasLastValidCard = true;
-			lastCardSeenTimestamp = millis();
-			waitingForCardRemoval = true;
 	#else
-			xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0); // If PAUSE_WHEN_RFID_REMOVED isn't active, every card-apply leads to new playlist-generation
+			xQueueSend(gRfidCardQueue, cardIdString.c_str(), 0);
 	#endif
+
+			memcpy(lastAcceptedCardId, presenceTracker.stableCardId, cardIdSize);
+			hasLastAcceptedCard = true;
 		}
 	}
 }

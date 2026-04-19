@@ -188,6 +188,21 @@
 
 	// RFID-RC522
 	#define RFID_SCAN_INTERVAL 100                      // Interval-time in ms (how often is RFID read?)
+	constexpr uint8_t RFID_PRESENT_CONFIRM_POLLS = 2;   // Number of consecutive positive polls before a tag is treated as stably present
+	constexpr uint8_t RFID_REMOVED_CONFIRM_POLLS = 4;   // Number of consecutive negative polls before a stable tag is treated as removed
+	constexpr uint16_t RFID_REMOVED_MIN_MS = 500;       // Minimum time a stable tag has to stay absent before pause-by-removal is triggered
+	constexpr uint16_t RFID_REAPPLY_GRACE_MS = 300;     // Delay after confirmed removal before pause is triggered to absorb quick reapplies
+
+	// Audio watchdog / buffering
+	constexpr uint16_t AUDIO_CONNECTION_TIMEOUT_MS = 1500;       // TCP connection timeout for plain HTTP streams
+	constexpr uint16_t AUDIO_CONNECTION_TIMEOUT_SSL_MS = 4000;   // TCP connection timeout for HTTPS / TLS streams
+	constexpr uint16_t AUDIO_LOCAL_STARTUP_TIMEOUT_MS = 4000;    // Grace period for local files before watchdog treats missing progress as an error
+	constexpr uint16_t AUDIO_LOCAL_STALL_TIMEOUT_MS = 5000;      // Maximum time without observable local playback progress
+	constexpr uint16_t AUDIO_STREAM_STARTUP_TIMEOUT_MS = 12000;  // Grace period for webstreams to fill buffers and start playback
+	constexpr uint16_t AUDIO_STREAM_STALL_TIMEOUT_MS = 15000;    // Maximum time without observable stream progress before recovery kicks in
+	constexpr uint8_t AUDIO_STREAM_LOW_BUFFER_PERCENT = 12;      // Input buffer threshold below which a webstream is considered low on buffered data
+	constexpr uint32_t AUDIO_INPUT_BUFFER_RAM_BYTES = 1600 * 10 * 2;    // Keep internal RAM usage modest
+	constexpr uint32_t AUDIO_INPUT_BUFFER_PSRAM_BYTES = __UINT16_MAX__ * 12; // Use PSRAM to provide more reserve for streams when available
 
 	// Automatic restart
 	#ifdef SHUTDOWN_IF_SD_BOOT_FAILS

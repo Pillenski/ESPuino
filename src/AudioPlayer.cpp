@@ -34,7 +34,6 @@
 playProps gPlayProperties;
 static bool AudioPlayer_PauseTask = false;
 static bool AudioPlayer_LoopInitialized = false;
-uint32_t playbackTimeoutStart = 0;
 uint32_t AudioPlayer_LastPlaytimeStatsTimestamp = 0u;
 // uint32_t cnt123 = 0;
 static TaskHandle_t AudioPlayer_TaskHandle = nullptr;
@@ -78,6 +77,22 @@ time_t playTimeSecSinceStart = 0;
 // current station logo url
 static String AudioPlayer_StationLogoUrl;
 
+struct AudioPlayer_HealthState {
+	uint32_t lastTrackStartMs = 0;
+	uint32_t lastAudioRunningMs = 0;
+	uint32_t lastBufferProgressMs = 0;
+	uint32_t lastPlaybackProgressMs = 0;
+	uint32_t lastLowBufferWarningMs = 0;
+	uint32_t lastLowBufferSampleMs = 0;
+	uint32_t lastRecoveryAttemptMs = 0;
+	uint32_t lastObservedBufferFilled = 0;
+	uint32_t lastObservedFilePos = 0;
+	uint32_t lastObservedCurrentTime = 0;
+	uint8_t consecutiveLowBufferWindows = 0;
+	uint8_t streamRecoveryAttempts = 0;
+};
+static AudioPlayer_HealthState AudioPlayer_Health;
+
 #ifdef HEADPHONE_ADJUST_ENABLE
 static bool AudioPlayer_HeadphoneLastDetectionState;
 static uint32_t AudioPlayer_HeadphoneLastDetectionTimestamp = 0u;
@@ -96,6 +111,10 @@ static void AudioPlayer_Task(void *parameter);
 static size_t AudioPlayer_NvsRfidWriteWrapper(const char *_rfidCardId, const char *_track, const uint32_t _playPosition, const uint8_t _playMode, const uint16_t _trackLastPlayed, const uint16_t _numberOfTracks);
 static void AudioPlayer_ClearCover(void);
 static uint32_t AudioPlayer_NextPlaylistRevision(uint32_t currentRevision);
+static void AudioPlayer_ResetHealth(Audio *audio, bool resetRecoveryAttempts = true);
+static void AudioPlayer_UpdateHealth(Audio *audio);
+static bool AudioPlayer_AttemptStreamRecovery(Audio *audio, uint32_t now);
+static bool AudioPlayer_HandleWatchdog(Audio *audio);
 
 void AudioPlayer_Init(void) {
 	// load playtime total from NVS
@@ -432,11 +451,134 @@ static uint32_t AudioPlayer_NextPlaylistRevision(uint32_t currentRevision) {
 	return currentRevision ? currentRevision : 1;
 }
 
+static void AudioPlayer_ResetHealth(Audio *audio, bool resetRecoveryAttempts) {
+	const uint32_t now = millis();
+	AudioPlayer_Health.lastTrackStartMs = now;
+	AudioPlayer_Health.lastAudioRunningMs = now;
+	AudioPlayer_Health.lastBufferProgressMs = now;
+	AudioPlayer_Health.lastPlaybackProgressMs = now;
+	AudioPlayer_Health.lastLowBufferWarningMs = 0;
+	AudioPlayer_Health.lastLowBufferSampleMs = now;
+	AudioPlayer_Health.lastObservedBufferFilled = audio ? audio->inBufferFilled() : 0;
+	AudioPlayer_Health.lastObservedFilePos = audio ? audio->getFilePos() : 0;
+	AudioPlayer_Health.lastObservedCurrentTime = audio ? audio->getAudioCurrentTime() : 0;
+	AudioPlayer_Health.consecutiveLowBufferWindows = 0;
+	if (resetRecoveryAttempts) {
+		AudioPlayer_Health.streamRecoveryAttempts = 0;
+		AudioPlayer_Health.lastRecoveryAttemptMs = 0;
+	}
+}
+
+static void AudioPlayer_UpdateHealth(Audio *audio) {
+	const uint32_t now = millis();
+	const uint32_t bufferFilled = audio->inBufferFilled();
+	const uint32_t filePos = audio->getFilePos();
+	const uint32_t currentTime = audio->getAudioCurrentTime();
+
+	if (audio->isRunning()) {
+		AudioPlayer_Health.lastAudioRunningMs = now;
+	}
+	if (bufferFilled != AudioPlayer_Health.lastObservedBufferFilled) {
+		AudioPlayer_Health.lastBufferProgressMs = now;
+	}
+	if ((filePos != AudioPlayer_Health.lastObservedFilePos) || (currentTime != AudioPlayer_Health.lastObservedCurrentTime)) {
+		AudioPlayer_Health.lastPlaybackProgressMs = now;
+	}
+
+	AudioPlayer_Health.lastObservedBufferFilled = bufferFilled;
+	AudioPlayer_Health.lastObservedFilePos = filePos;
+	AudioPlayer_Health.lastObservedCurrentTime = currentTime;
+
+	if (!gPlayProperties.isWebstream || (audio->inBufferSize() == 0) || ((now - AudioPlayer_Health.lastLowBufferSampleMs) < 250)) {
+		return;
+	}
+
+	AudioPlayer_Health.lastLowBufferSampleMs = now;
+	const uint32_t lowBufferThreshold = (audio->inBufferSize() * AUDIO_STREAM_LOW_BUFFER_PERCENT) / 100;
+	if (bufferFilled <= lowBufferThreshold) {
+		if (AudioPlayer_Health.consecutiveLowBufferWindows < UINT8_MAX) {
+			AudioPlayer_Health.consecutiveLowBufferWindows++;
+		}
+		AudioPlayer_Health.lastLowBufferWarningMs = now;
+	} else {
+		AudioPlayer_Health.consecutiveLowBufferWindows = 0;
+	}
+}
+
+static bool AudioPlayer_AttemptStreamRecovery(Audio *audio, uint32_t now) {
+	if (!gPlayProperties.isWebstream || gPlayProperties.playlist == nullptr || gPlayProperties.currentTrackNumber >= gPlayProperties.playlist->size()) {
+		return false;
+	}
+	if (AudioPlayer_Health.streamRecoveryAttempts >= 1) {
+		return false;
+	}
+
+	const char *url = gPlayProperties.playlist->at(gPlayProperties.currentTrackNumber);
+	if (strncmp(url, "http", 4) != 0) {
+		return false;
+	}
+
+	AudioPlayer_Health.streamRecoveryAttempts++;
+	AudioPlayer_Health.lastRecoveryAttemptMs = now;
+	Log_Printf(LOGLEVEL_DEBUG, "Audio watchdog: reconnect stalled stream, lowBufferWindows=%u, buffered=%u", AudioPlayer_Health.consecutiveLowBufferWindows, audio->inBufferFilled());
+	audio->stopSong();
+	const bool recovered = audio->connecttohost(url);
+	if (!recovered) {
+		return false;
+	}
+
+	gPlayProperties.playlistFinished = false;
+	gPlayProperties.trackFinished = false;
+	gTriedToConnectToHost = true;
+	AudioPlayer_ResetHealth(audio, false);
+	return true;
+}
+
+static bool AudioPlayer_HandleWatchdog(Audio *audio) {
+	if (gPlayProperties.currentSpeechActive) {
+		AudioPlayer_ResetHealth(audio);
+		return false;
+	}
+
+	const bool activeMode = (gPlayProperties.playMode != NO_PLAYLIST && gPlayProperties.playMode != BUSY);
+	if (!activeMode || gPlayProperties.playlistFinished || gPlayProperties.pausePlay) {
+		AudioPlayer_ResetHealth(audio);
+		return false;
+	}
+
+	const uint32_t now = millis();
+	const bool isStream = gPlayProperties.isWebstream;
+	const uint32_t startupTimeout = isStream ? AUDIO_STREAM_STARTUP_TIMEOUT_MS : AUDIO_LOCAL_STARTUP_TIMEOUT_MS;
+	uint32_t stallTimeout = isStream ? AUDIO_STREAM_STALL_TIMEOUT_MS : AUDIO_LOCAL_STALL_TIMEOUT_MS;
+	if (isStream && (AudioPlayer_Health.lastLowBufferWarningMs > 0) && ((now - AudioPlayer_Health.lastLowBufferWarningMs) <= AUDIO_STREAM_STALL_TIMEOUT_MS)) {
+		stallTimeout += (AUDIO_STREAM_STALL_TIMEOUT_MS / 2);
+	}
+
+	const bool startupExpired = ((now - AudioPlayer_Health.lastTrackStartMs) > startupTimeout);
+	if (!startupExpired) {
+		return false;
+	}
+
+	const bool audioHealthy = ((now - AudioPlayer_Health.lastAudioRunningMs) <= stallTimeout);
+	const bool bufferHealthy = ((now - AudioPlayer_Health.lastBufferProgressMs) <= stallTimeout);
+	const bool playbackHealthy = ((now - AudioPlayer_Health.lastPlaybackProgressMs) <= stallTimeout);
+	if (audioHealthy || bufferHealthy || playbackHealthy) {
+		return false;
+	}
+
+	Log_Printf(LOGLEVEL_DEBUG, "Audio watchdog stalled: stream=%u, lowBufferWindows=%u, buffer=%u", isStream, AudioPlayer_Health.consecutiveLowBufferWindows, audio->inBufferFilled());
+	if (isStream && AudioPlayer_AttemptStreamRecovery(audio, now)) {
+		return false;
+	}
+
+	System_IndicateError();
+	gPlayProperties.trackFinished = true;
+	return true;
+}
+
 // Function to play music as task
 static void AudioPlayer_Process(void) {
 	Audio *audio = AudioPlayer_GetAudio();
-
-	constexpr uint32_t playbackTimeout = 2000;
 
 	uint8_t currentVolume;
 	static int8_t currentEqualizer[3];
@@ -454,10 +596,11 @@ static void AudioPlayer_Process(void) {
 		currentEqualizer[1] = gPrefsSettings.getChar("gainBandPass", 0);
 		currentEqualizer[2] = gPrefsSettings.getChar("gainHighPass", 0);
 		audio->setTone(currentEqualizer[0], currentEqualizer[1], currentEqualizer[2]);
-		audio->setBufsize(1600 * 10 * 2, __UINT16_MAX__ * 10);
+		audio->setBufsize(AUDIO_INPUT_BUFFER_RAM_BYTES, AUDIO_INPUT_BUFFER_PSRAM_BYTES);
+		audio->setConnectionTimeout(AUDIO_CONNECTION_TIMEOUT_MS, AUDIO_CONNECTION_TIMEOUT_SSL_MS);
 		AudioPlayer_CurrentTime = 0;
 		AudioPlayer_FileDuration = 0;
-		playbackTimeoutStart = millis();
+		AudioPlayer_ResetHealth(audio);
 		AudioPlayer_LoopInitialized = true;
 	}
 
@@ -528,10 +671,10 @@ static void AudioPlayer_Process(void) {
 			Web_UpdatePlaylistSnapshot(gPlayProperties.playlist, gPlayProperties.playlistRevision);
 			Log_Printf(LOGLEVEL_NOTICE, newPlaylistReceived, gPlayProperties.playlist->size());
 			Log_Printf(LOGLEVEL_DEBUG, "Free heap: %u", ESP.getFreeHeap());
-			playbackTimeoutStart = millis();
 			gPlayProperties.pausePlay = false;
 			gPlayProperties.trackFinished = false;
 			gPlayProperties.playlistFinished = false;
+			AudioPlayer_ResetHealth(audio);
 #ifdef MQTT_ENABLE
 			publishMqtt(topicPlaymodeState, gPlayProperties.playMode, false);
 			publishMqtt(topicRepeatModeState, AudioPlayer_GetRepeatMode(), false);
@@ -593,6 +736,7 @@ static void AudioPlayer_Process(void) {
 				Web_ClearPlaylistSnapshot(gPlayProperties.playlistRevision);
 				Audio_setTitle(noPlaylist);
 				AudioPlayer_ClearCover();
+				AudioPlayer_ResetHealth(audio);
 				return;
 
 			case PAUSEPLAY:
@@ -609,6 +753,7 @@ static void AudioPlayer_Process(void) {
 				}
 				gPlayProperties.pausePlay = !gPlayProperties.pausePlay;
 				Web_SendWebsocketData(0, WebsocketCodeType::TrackInfo);
+				AudioPlayer_ResetHealth(audio);
 				return;
 
 			case NEXTTRACK:
@@ -703,6 +848,7 @@ static void AudioPlayer_Process(void) {
 							return;
 						}
 						Log_Println(trackStart, LOGLEVEL_INFO);
+						AudioPlayer_ResetHealth(audio);
 						return;
 					}
 				}
@@ -865,6 +1011,7 @@ static void AudioPlayer_Process(void) {
 			gPlayProperties.trackFinished = true;
 			return;
 		} else {
+			AudioPlayer_ResetHealth(audio);
 			if (gPlayProperties.currentTrackNumber) {
 				Led_Indicate(LedIndicatorType::PlaylistProgress);
 			}
@@ -988,27 +1135,11 @@ static void AudioPlayer_Process(void) {
 	} else {
 		System_UpdateActivityTimer(); // Refresh if playlist is active so uC will not fall asleep due to reaching inactivity-time
 	}
-
-	if (audio->isRunning()) {
-		playbackTimeoutStart = millis();
+	AudioPlayer_UpdateHealth(audio);
+	if (AudioPlayer_HandleWatchdog(audio)) {
+		return;
 	}
 
-	// If error occured: move to the next track in the playlist
-	const bool activeMode = (gPlayProperties.playMode != NO_PLAYLIST && gPlayProperties.playMode != BUSY);
-	const bool noAudio = (!audio->isRunning() && !gPlayProperties.pausePlay);
-	const bool timeout = ((millis() - playbackTimeoutStart) > playbackTimeout);
-	if (activeMode) {
-		// we check for timeout
-		if (noAudio && timeout) {
-			// Audio playback timed out, move on to the next
-			System_IndicateError();
-			gPlayProperties.trackFinished = true;
-			playbackTimeoutStart = millis();
-		}
-	} else {
-		// we are idle, update timeout so that we do not get a spurious error when launching into a playlist
-		playbackTimeoutStart = millis();
-	}
 	if ((System_GetOperationMode() == OPMODE_BLUETOOTH_SOURCE) && audio->isRunning()) {
 		// do not delay here, audio task is time critical in BT-Source mode
 	} else {
@@ -1418,6 +1549,10 @@ void AudioPlayer_ClearCover(void) {
 void audio_info(const char *info) {
 	Log_Printf(LOGLEVEL_INFO, "info        : %s", info);
 	if (startsWith((char *) info, "slow stream, dropouts")) {
+		AudioPlayer_Health.lastLowBufferWarningMs = millis();
+		if (AudioPlayer_Health.consecutiveLowBufferWindows < UINT8_MAX) {
+			AudioPlayer_Health.consecutiveLowBufferWindows++;
+		}
 		// websocket notify for slow stream
 		Web_SendWebsocketData(0, WebsocketCodeType::Dropout);
 	}
@@ -1438,6 +1573,13 @@ void audio_id3data(const char *info) { // id3 metadata
 void audio_eof_mp3(const char *info) { // end of file
 	Log_Printf(LOGLEVEL_INFO, "eof_mp3     : %s", info);
 	gPlayProperties.trackFinished = true;
+}
+
+void audio_eof_stream(const char *info) {
+	Log_Printf(LOGLEVEL_INFO, "eof_stream  : %s", info);
+	if (gPlayProperties.isWebstream) {
+		gPlayProperties.trackFinished = true;
+	}
 }
 
 void audio_showstation(const char *info) {

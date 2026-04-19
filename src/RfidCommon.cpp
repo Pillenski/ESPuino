@@ -18,6 +18,91 @@ char gCurrentRfidTagId[cardIdStringSize] = ""; // No crap here as otherwise it c
 char gOldRfidTagId[cardIdStringSize] = "X"; // Init with crap
 #endif
 
+static void RfidPresenceTracker_ResetCandidate(RfidPresenceTracker &tracker) {
+	tracker.hasCandidateCard = false;
+	tracker.presentConfirmCount = 0;
+	memset(tracker.candidateCardId, 0, sizeof(tracker.candidateCardId));
+}
+
+void RfidPresenceTracker_Init(RfidPresenceTracker &tracker) {
+	tracker = {};
+}
+
+RfidPresenceUpdate RfidPresenceTracker_Update(RfidPresenceTracker &tracker, bool cardPresent, const uint8_t *cardId, uint32_t now) {
+	RfidPresenceUpdate update;
+
+	if (cardPresent && cardId != nullptr) {
+		tracker.removedConfirmCount = 0;
+		tracker.removedSinceMs = 0;
+
+		if (tracker.hasStableCard && memcmp(tracker.stableCardId, cardId, cardIdSize) == 0) {
+			tracker.state = RfidPresenceState::PresentStable;
+			tracker.pausePending = false;
+			tracker.pausePendingSinceMs = 0;
+			RfidPresenceTracker_ResetCandidate(tracker);
+			return update;
+		}
+
+		if (!tracker.hasCandidateCard || memcmp(tracker.candidateCardId, cardId, cardIdSize) != 0) {
+			memcpy(tracker.candidateCardId, cardId, cardIdSize);
+			tracker.hasCandidateCard = true;
+			tracker.presentConfirmCount = 1;
+		} else if (tracker.presentConfirmCount < UINT8_MAX) {
+			tracker.presentConfirmCount++;
+		}
+
+		tracker.state = RfidPresenceState::CandidatePresent;
+		if (tracker.presentConfirmCount >= RFID_PRESENT_CONFIRM_POLLS) {
+			memcpy(tracker.stableCardId, tracker.candidateCardId, cardIdSize);
+			tracker.hasStableCard = true;
+			tracker.state = RfidPresenceState::PresentStable;
+			tracker.pausePending = false;
+			tracker.pausePendingSinceMs = 0;
+			RfidPresenceTracker_ResetCandidate(tracker);
+			update.stableCardDetected = true;
+		}
+		return update;
+	}
+
+	RfidPresenceTracker_ResetCandidate(tracker);
+	if (!tracker.hasStableCard) {
+		tracker.state = RfidPresenceState::NoCard;
+		return update;
+	}
+
+	if (tracker.removedConfirmCount == 0) {
+		tracker.removedSinceMs = now;
+	}
+	if (tracker.removedConfirmCount < UINT8_MAX) {
+		tracker.removedConfirmCount++;
+	}
+	tracker.state = RfidPresenceState::CandidateAbsent;
+	if ((tracker.removedConfirmCount >= RFID_REMOVED_CONFIRM_POLLS) && ((now - tracker.removedSinceMs) >= RFID_REMOVED_MIN_MS)) {
+		tracker.hasStableCard = false;
+		tracker.removedConfirmCount = 0;
+		tracker.removedSinceMs = 0;
+		tracker.state = RfidPresenceState::NoCard;
+		tracker.pausePending = true;
+		tracker.pausePendingSinceMs = now;
+		update.stableCardRemoved = true;
+	}
+
+	return update;
+}
+
+bool RfidPresenceTracker_ShouldPause(RfidPresenceTracker &tracker, uint32_t now) {
+	if (!tracker.pausePending || tracker.hasStableCard) {
+		return false;
+	}
+	if ((now - tracker.pausePendingSinceMs) < RFID_REAPPLY_GRACE_MS) {
+		return false;
+	}
+
+	tracker.pausePending = false;
+	tracker.pausePendingSinceMs = 0;
+	return true;
+}
+
 // check if we have RFID-reader enabled
 #if defined(RFID_READER_TYPE_MFRC522_SPI) || defined(RFID_READER_TYPE_MFRC522_I2C) || defined(RFID_READER_TYPE_PN5180)
 	#define RFID_READER_ENABLED 1
