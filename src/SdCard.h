@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-
 #include "settings.h"
 #ifdef SD_MMC_1BIT_MODE
 	#include "SD_MMC.h"

@@ -22,16 +22,16 @@
 #include "SdCard.h"
 #include "System.h"
 #include "Wlan.h"
-#include "values.h"
 #include "freertos/ringbuf.h"
 #include "freertos/semphr.h"
 #include "revision.h"
 #include "soc/timer_group_reg.h"
 #include "soc/timer_group_struct.h"
+#include "values.h"
 
-#include <cstring>
 #include <Update.h>
 #include <WiFi.h>
+#include <cstring>
 #include <esp_task_wdt.h>
 #include <memory>
 #include <nvs.h>
@@ -1514,20 +1514,20 @@ static void handlePostSdCardTestRequest(AsyncWebServerRequest *request, JsonVari
 		return;
 	}
 
-	sdCardTestStatus = sdCardTestStatus_t{};
+	sdCardTestStatus = sdCardTestStatus_t {};
 	sdCardTestStatus.state = SdCardTestState::Running;
 	sdCardTestStatus.running = true;
 	sdCardTestStatus.sizeMB = sizeMB;
-#ifdef SD_MMC_1BIT_MODE
+	#ifdef SD_MMC_1BIT_MODE
 	sdCardTestStatus.totalBytes = sizeBytes * 2 * sdCardBenchmarkMaxSweepEntries;
 	snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Preparing SD card frequency sweep...");
-#else
+	#else
 	sdCardTestStatus.totalBytes = sizeBytes * 2;
 	snprintf(sdCardTestStatus.message, sizeof(sdCardTestStatus.message), "%s", "Preparing SD card benchmark...");
-#endif
+	#endif
 	unlockSdCardTestStatus();
 
-	std::unique_ptr<sdCardTestTaskArgs_t> args(new (std::nothrow) sdCardTestTaskArgs_t{sizeBytes});
+	std::unique_ptr<sdCardTestTaskArgs_t> args(new (std::nothrow) sdCardTestTaskArgs_t {sizeBytes});
 	if (!args) {
 		if (lockSdCardTestStatus()) {
 			sdCardTestStatus.state = SdCardTestState::Error;
@@ -1546,7 +1546,8 @@ static void handlePostSdCardTestRequest(AsyncWebServerRequest *request, JsonVari
 			args.get(),
 			1 | portPRIVILEGE_BIT,
 			&sdCardTestTaskHandle,
-			ARDUINO_RUNNING_CORE) != pdPASS) {
+			ARDUINO_RUNNING_CORE)
+		!= pdPASS) {
 		if (lockSdCardTestStatus()) {
 			sdCardTestStatus.state = SdCardTestState::Error;
 			sdCardTestStatus.running = false;
@@ -1741,14 +1742,14 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			handleUploadError(request, 409);
 			return;
 		}
-			explorerUploadOwner = request;
-			request->onDisconnect([request]() {
-				if (explorerUploadOwner == request) {
-					if (fileStorageTaskHandle != NULL) {
-						xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
-					}
+		explorerUploadOwner = request;
+		request->onDisconnect([request]() {
+			if (explorerUploadOwner == request) {
+				if (fileStorageTaskHandle != NULL) {
+					xTaskNotify(fileStorageTaskHandle, 2u, eSetValueWithOverwrite);
 				}
-			});
+			}
+		});
 
 		String utf8Folder = "/";
 		String utf8FilePath;
@@ -1798,14 +1799,15 @@ void explorerHandleFileUpload(AsyncWebServerRequest *request, String filename, s
 			return;
 		}
 		if (xTaskCreatePinnedToCore(
-			explorerHandleFileStorageTask, /* Function to implement the task */
-			"fileStorageTask", /* Name of the task */
-			4000, /* Stack size in words */
-			(void *) filePathCopy, /* Task input parameter */
-			2 | portPRIVILEGE_BIT, /* Priority of the task */
-			&fileStorageTaskHandle, /* Task handle. */
-			ARDUINO_RUNNING_CORE /* Core where the task should run */
-		) != pdPASS) {
+				explorerHandleFileStorageTask, /* Function to implement the task */
+				"fileStorageTask", /* Name of the task */
+				4000, /* Stack size in words */
+				(void *) filePathCopy, /* Task input parameter */
+				2 | portPRIVILEGE_BIT, /* Priority of the task */
+				&fileStorageTaskHandle, /* Task handle. */
+				ARDUINO_RUNNING_CORE /* Core where the task should run */
+				)
+			!= pdPASS) {
 			free((void *) filePathCopy);
 			destroyDoubleBuffer();
 			handleUploadError(request, 500);

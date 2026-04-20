@@ -583,7 +583,7 @@ static void AudioPlayer_Process(void) {
 	uint8_t currentVolume;
 	static int8_t currentEqualizer[3];
 	BaseType_t trackQStatus = pdFAIL;
-	TrackControlMessage trackCommand = { NO_ACTION, 0 };
+	TrackControlMessage trackCommand = {NO_ACTION, 0};
 	bool audioReturnCode;
 
 	if (!AudioPlayer_LoopInitialized) {
@@ -1488,7 +1488,7 @@ void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand) {
 }
 
 void AudioPlayer_TrackControlToQueueSender(const uint8_t trackCommand, const uint16_t trackNumber) {
-	TrackControlMessage message = { trackCommand, trackNumber };
+	TrackControlMessage message = {trackCommand, trackNumber};
 	xQueueSend(gTrackControlQueue, &message, 0);
 }
 

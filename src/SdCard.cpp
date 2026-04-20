@@ -9,8 +9,8 @@
 #include "MemX.h"
 #include "System.h"
 
-#include <esp_timer.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 
 #ifdef SD_MMC_1BIT_MODE
 	#include <driver/sdmmc_host.h>
@@ -28,212 +28,212 @@ fs::FS gFSystem = (fs::FS) SD;
 #endif
 
 namespace {
-	constexpr char benchmarkFilePath[] = "/.sdtest.bin";
-	constexpr uint32_t benchmarkRandomSeed = 0x51DCA4D3u;
+constexpr char benchmarkFilePath[] = "/.sdtest.bin";
+constexpr uint32_t benchmarkRandomSeed = 0x51DCA4D3u;
 #ifdef BOARD_HAS_PSRAM
-	constexpr size_t benchmarkChunkSize = 16 * 1024;
+constexpr size_t benchmarkChunkSize = 16 * 1024;
 #else
-	constexpr size_t benchmarkChunkSize = 4 * 1024;
+constexpr size_t benchmarkChunkSize = 4 * 1024;
 #endif
 #ifdef SD_MMC_1BIT_MODE
-	constexpr std::array<uint32_t, sdCardBenchmarkMaxSweepEntries> benchmarkSweepFrequenciesKHz = {
-		SDMMC_FREQ_DEFAULT,
-		SDMMC_FREQ_26M,
-		SDMMC_FREQ_HIGHSPEED,
-	};
-	constexpr uint32_t sdCardDefaultFrequencyKHz = SDMMC_FREQ_26M;
+constexpr std::array<uint32_t, sdCardBenchmarkMaxSweepEntries> benchmarkSweepFrequenciesKHz = {
+	SDMMC_FREQ_DEFAULT,
+	SDMMC_FREQ_26M,
+	SDMMC_FREQ_HIGHSPEED,
+};
+constexpr uint32_t sdCardDefaultFrequencyKHz = SDMMC_FREQ_26M;
 #endif
 
-	uint32_t benchmarkNextRandom(uint32_t &state) {
-		state ^= state << 13;
-		state ^= state >> 17;
-		state ^= state << 5;
-		return state;
-	}
+uint32_t benchmarkNextRandom(uint32_t &state) {
+	state ^= state << 13;
+	state ^= state >> 17;
+	state ^= state << 5;
+	return state;
+}
 
-	void benchmarkFillBuffer(uint8_t *buffer, size_t len, uint32_t &state) {
-		size_t offset = 0;
-		while (offset < len) {
-			uint32_t value = benchmarkNextRandom(state);
-			const size_t bytesToCopy = std::min(len - offset, sizeof(value));
-			memcpy(buffer + offset, &value, bytesToCopy);
-			offset += bytesToCopy;
-		}
+void benchmarkFillBuffer(uint8_t *buffer, size_t len, uint32_t &state) {
+	size_t offset = 0;
+	while (offset < len) {
+		uint32_t value = benchmarkNextRandom(state);
+		const size_t bytesToCopy = std::min(len - offset, sizeof(value));
+		memcpy(buffer + offset, &value, bytesToCopy);
+		offset += bytesToCopy;
 	}
+}
 
-	template <typename T>
-	void benchmarkSetMessage(T &target, const char *message) {
-		snprintf(target.message, sizeof(target.message), "%s", message ? message : "");
-	}
+template <typename T>
+void benchmarkSetMessage(T &target, const char *message) {
+	snprintf(target.message, sizeof(target.message), "%s", message ? message : "");
+}
 
-	uint32_t benchmarkDurationMs(int64_t durationUs) {
-		return static_cast<uint32_t>(std::max<int64_t>(0, durationUs / 1000));
-	}
+uint32_t benchmarkDurationMs(int64_t durationUs) {
+	return static_cast<uint32_t>(std::max<int64_t>(0, durationUs / 1000));
+}
 
-	float benchmarkRateKiBs(uint32_t totalBytes, uint32_t durationMs) {
-		if (durationMs == 0) {
-			return 0.f;
-		}
-		return (static_cast<float>(totalBytes) / 1024.f) / (static_cast<float>(durationMs) / 1000.f);
+float benchmarkRateKiBs(uint32_t totalBytes, uint32_t durationMs) {
+	if (durationMs == 0) {
+		return 0.f;
 	}
+	return (static_cast<float>(totalBytes) / 1024.f) / (static_cast<float>(durationMs) / 1000.f);
+}
 
-	void benchmarkReportProgress(const SdCardBenchmarkConfig &config, SdCardBenchmarkPhase phase, uint32_t processedBytes, uint32_t totalBytes, uint32_t frequencyKHz) {
-		if (config.progressCallback) {
-			config.progressCallback(phase, processedBytes, totalBytes, frequencyKHz, config.progressUserData);
-		}
+void benchmarkReportProgress(const SdCardBenchmarkConfig &config, SdCardBenchmarkPhase phase, uint32_t processedBytes, uint32_t totalBytes, uint32_t frequencyKHz) {
+	if (config.progressCallback) {
+		config.progressCallback(phase, processedBytes, totalBytes, frequencyKHz, config.progressUserData);
 	}
+}
 
-	void benchmarkCopyEntryToResult(const SdCardBenchmarkSweepEntry &entry, SdCardBenchmarkResult &result) {
-		result.frequencyKHz = entry.frequencyKHz;
-		result.writeDurationMs = entry.writeDurationMs;
-		result.readDurationMs = entry.readDurationMs;
-		result.verifyDurationMs = entry.verifyDurationMs;
-		result.writeSpeedKiBs = entry.writeSpeedKiBs;
-		result.readSpeedKiBs = entry.readSpeedKiBs;
-		result.verifiedReadSpeedKiBs = entry.verifiedReadSpeedKiBs;
-		result.writeErrors = entry.writeErrors;
-		result.readErrors = entry.readErrors;
-		result.verifyErrors = entry.verifyErrors;
-	}
+void benchmarkCopyEntryToResult(const SdCardBenchmarkSweepEntry &entry, SdCardBenchmarkResult &result) {
+	result.frequencyKHz = entry.frequencyKHz;
+	result.writeDurationMs = entry.writeDurationMs;
+	result.readDurationMs = entry.readDurationMs;
+	result.verifyDurationMs = entry.verifyDurationMs;
+	result.writeSpeedKiBs = entry.writeSpeedKiBs;
+	result.readSpeedKiBs = entry.readSpeedKiBs;
+	result.verifiedReadSpeedKiBs = entry.verifiedReadSpeedKiBs;
+	result.writeErrors = entry.writeErrors;
+	result.readErrors = entry.readErrors;
+	result.verifyErrors = entry.verifyErrors;
+}
 
 #ifdef SD_MMC_1BIT_MODE
-	bool benchmarkSetSdCardFrequency(uint32_t frequencyKHz, char *messageBuffer, size_t messageBufferSize) {
-		const esp_err_t err = sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_1, frequencyKHz);
-		if (err == ESP_OK) {
-			return true;
-		}
+bool benchmarkSetSdCardFrequency(uint32_t frequencyKHz, char *messageBuffer, size_t messageBufferSize) {
+	const esp_err_t err = sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_1, frequencyKHz);
+	if (err == ESP_OK) {
+		return true;
+	}
 
-		if (messageBuffer && messageBufferSize > 0) {
-			snprintf(messageBuffer, messageBufferSize, "Failed to switch SD card clock to %lu MHz (0x%x).", frequencyKHz / 1000UL, static_cast<unsigned>(err));
-		}
+	if (messageBuffer && messageBufferSize > 0) {
+		snprintf(messageBuffer, messageBufferSize, "Failed to switch SD card clock to %lu MHz (0x%x).", frequencyKHz / 1000UL, static_cast<unsigned>(err));
+	}
+	return false;
+}
+#endif
+
+bool benchmarkRunSingle(const SdCardBenchmarkConfig &config, uint32_t frequencyKHz, uint32_t progressBaseBytes, uint32_t progressTotalBytes, SdCardBenchmarkSweepEntry &entry) {
+	entry = SdCardBenchmarkSweepEntry {};
+	entry.frequencyKHz = frequencyKHz;
+
+	if (gFSystem.exists(benchmarkFilePath) && !gFSystem.remove(benchmarkFilePath)) {
+		benchmarkSetMessage(entry, "Failed to delete previous benchmark file.");
 		return false;
 	}
-#endif
 
-	bool benchmarkRunSingle(const SdCardBenchmarkConfig &config, uint32_t frequencyKHz, uint32_t progressBaseBytes, uint32_t progressTotalBytes, SdCardBenchmarkSweepEntry &entry) {
-		entry = SdCardBenchmarkSweepEntry{};
-		entry.frequencyKHz = frequencyKHz;
-
-		if (gFSystem.exists(benchmarkFilePath) && !gFSystem.remove(benchmarkFilePath)) {
-			benchmarkSetMessage(entry, "Failed to delete previous benchmark file.");
-			return false;
-		}
-
-		uint8_t *writeBuffer = static_cast<uint8_t *>(malloc(benchmarkChunkSize));
-		uint8_t *readBuffer = static_cast<uint8_t *>(malloc(benchmarkChunkSize));
-		if (!writeBuffer || !readBuffer) {
-			free(writeBuffer);
-			free(readBuffer);
-			benchmarkSetMessage(entry, "Failed to allocate benchmark buffers.");
-			return false;
-		}
-
-		uint32_t randomState = benchmarkRandomSeed;
-		benchmarkFillBuffer(writeBuffer, benchmarkChunkSize, randomState);
-
-		bool cleanupOkay = true;
-		bool benchmarkOkay = false;
-		File benchmarkFile = gFSystem.open(benchmarkFilePath, FILE_WRITE);
-		if (!benchmarkFile) {
-			benchmarkSetMessage(entry, "Failed to open benchmark file for writing.");
-			goto cleanup;
-		}
-
-		benchmarkSetMessage(entry, "Writing benchmark data...");
-		benchmarkReportProgress(config, SdCardBenchmarkPhase::Write, progressBaseBytes, progressTotalBytes, frequencyKHz);
-		{
-			int64_t writeDurationUs = 0;
-			uint32_t writtenBytes = 0;
-
-			while (writtenBytes < config.sizeBytes) {
-				const size_t bytesThisRound = std::min<size_t>(benchmarkChunkSize, config.sizeBytes - writtenBytes);
-				const int64_t writeStartUs = esp_timer_get_time();
-				const size_t bytesWritten = benchmarkFile.write(writeBuffer, bytesThisRound);
-				writeDurationUs += esp_timer_get_time() - writeStartUs;
-				if (bytesWritten != bytesThisRound) {
-					entry.writeErrors++;
-					benchmarkSetMessage(entry, "Short write while writing benchmark file.");
-					benchmarkFile.close();
-					goto cleanup;
-				}
-
-				writtenBytes += bytesWritten;
-				benchmarkReportProgress(config, SdCardBenchmarkPhase::Write, progressBaseBytes + writtenBytes, progressTotalBytes, frequencyKHz);
-			}
-
-			const int64_t flushStartUs = esp_timer_get_time();
-			benchmarkFile.flush();
-			writeDurationUs += esp_timer_get_time() - flushStartUs;
-			entry.writeDurationMs = benchmarkDurationMs(writeDurationUs);
-			entry.writeSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.writeDurationMs);
-		}
-		benchmarkFile.close();
-
-		benchmarkFile = gFSystem.open(benchmarkFilePath, FILE_READ);
-		if (!benchmarkFile) {
-			benchmarkSetMessage(entry, "Failed to open benchmark file for reading.");
-			goto cleanup;
-		}
-
-		benchmarkSetMessage(entry, "Reading and verifying benchmark data...");
-		benchmarkReportProgress(config, SdCardBenchmarkPhase::Read, progressBaseBytes + config.sizeBytes, progressTotalBytes, frequencyKHz);
-		{
-			int64_t readDurationUs = 0;
-			int64_t verifyDurationUs = 0;
-			uint32_t readBytesTotal = 0;
-
-			while (readBytesTotal < config.sizeBytes) {
-				const size_t bytesThisRound = std::min<size_t>(benchmarkChunkSize, config.sizeBytes - readBytesTotal);
-				const int64_t readStartUs = esp_timer_get_time();
-				const size_t bytesRead = benchmarkFile.read(readBuffer, bytesThisRound);
-				readDurationUs += esp_timer_get_time() - readStartUs;
-				if (bytesRead != bytesThisRound) {
-					entry.readErrors++;
-					benchmarkSetMessage(entry, "Short read while reading benchmark file.");
-					benchmarkFile.close();
-					goto cleanup;
-				}
-
-				const int64_t verifyStartUs = esp_timer_get_time();
-				if (memcmp(readBuffer, writeBuffer, bytesThisRound) != 0) {
-					verifyDurationUs += esp_timer_get_time() - verifyStartUs;
-					entry.verifyErrors++;
-					benchmarkSetMessage(entry, "Verification failed while reading benchmark data.");
-					benchmarkFile.close();
-					goto cleanup;
-				}
-				verifyDurationUs += esp_timer_get_time() - verifyStartUs;
-
-				readBytesTotal += bytesRead;
-				benchmarkReportProgress(config, SdCardBenchmarkPhase::Read, progressBaseBytes + config.sizeBytes + readBytesTotal, progressTotalBytes, frequencyKHz);
-			}
-
-			entry.readDurationMs = benchmarkDurationMs(readDurationUs);
-			entry.verifyDurationMs = benchmarkDurationMs(verifyDurationUs);
-			entry.readSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.readDurationMs);
-			entry.verifiedReadSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.readDurationMs + entry.verifyDurationMs);
-		}
-		benchmarkFile.close();
-
-		entry.success = true;
-		benchmarkSetMessage(entry, "Benchmark completed successfully.");
-		benchmarkOkay = true;
-
-cleanup:
-		if (benchmarkFile) {
-			benchmarkFile.close();
-		}
-		if (gFSystem.exists(benchmarkFilePath) && !gFSystem.remove(benchmarkFilePath)) {
-			cleanupOkay = false;
-			if (benchmarkOkay) {
-				entry.success = false;
-				benchmarkSetMessage(entry, "Benchmark file could not be deleted after the test.");
-			}
-		}
+	uint8_t *writeBuffer = static_cast<uint8_t *>(malloc(benchmarkChunkSize));
+	uint8_t *readBuffer = static_cast<uint8_t *>(malloc(benchmarkChunkSize));
+	if (!writeBuffer || !readBuffer) {
 		free(writeBuffer);
 		free(readBuffer);
-		return benchmarkOkay && cleanupOkay && entry.success;
+		benchmarkSetMessage(entry, "Failed to allocate benchmark buffers.");
+		return false;
 	}
+
+	uint32_t randomState = benchmarkRandomSeed;
+	benchmarkFillBuffer(writeBuffer, benchmarkChunkSize, randomState);
+
+	bool cleanupOkay = true;
+	bool benchmarkOkay = false;
+	File benchmarkFile = gFSystem.open(benchmarkFilePath, FILE_WRITE);
+	if (!benchmarkFile) {
+		benchmarkSetMessage(entry, "Failed to open benchmark file for writing.");
+		goto cleanup;
+	}
+
+	benchmarkSetMessage(entry, "Writing benchmark data...");
+	benchmarkReportProgress(config, SdCardBenchmarkPhase::Write, progressBaseBytes, progressTotalBytes, frequencyKHz);
+	{
+		int64_t writeDurationUs = 0;
+		uint32_t writtenBytes = 0;
+
+		while (writtenBytes < config.sizeBytes) {
+			const size_t bytesThisRound = std::min<size_t>(benchmarkChunkSize, config.sizeBytes - writtenBytes);
+			const int64_t writeStartUs = esp_timer_get_time();
+			const size_t bytesWritten = benchmarkFile.write(writeBuffer, bytesThisRound);
+			writeDurationUs += esp_timer_get_time() - writeStartUs;
+			if (bytesWritten != bytesThisRound) {
+				entry.writeErrors++;
+				benchmarkSetMessage(entry, "Short write while writing benchmark file.");
+				benchmarkFile.close();
+				goto cleanup;
+			}
+
+			writtenBytes += bytesWritten;
+			benchmarkReportProgress(config, SdCardBenchmarkPhase::Write, progressBaseBytes + writtenBytes, progressTotalBytes, frequencyKHz);
+		}
+
+		const int64_t flushStartUs = esp_timer_get_time();
+		benchmarkFile.flush();
+		writeDurationUs += esp_timer_get_time() - flushStartUs;
+		entry.writeDurationMs = benchmarkDurationMs(writeDurationUs);
+		entry.writeSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.writeDurationMs);
+	}
+	benchmarkFile.close();
+
+	benchmarkFile = gFSystem.open(benchmarkFilePath, FILE_READ);
+	if (!benchmarkFile) {
+		benchmarkSetMessage(entry, "Failed to open benchmark file for reading.");
+		goto cleanup;
+	}
+
+	benchmarkSetMessage(entry, "Reading and verifying benchmark data...");
+	benchmarkReportProgress(config, SdCardBenchmarkPhase::Read, progressBaseBytes + config.sizeBytes, progressTotalBytes, frequencyKHz);
+	{
+		int64_t readDurationUs = 0;
+		int64_t verifyDurationUs = 0;
+		uint32_t readBytesTotal = 0;
+
+		while (readBytesTotal < config.sizeBytes) {
+			const size_t bytesThisRound = std::min<size_t>(benchmarkChunkSize, config.sizeBytes - readBytesTotal);
+			const int64_t readStartUs = esp_timer_get_time();
+			const size_t bytesRead = benchmarkFile.read(readBuffer, bytesThisRound);
+			readDurationUs += esp_timer_get_time() - readStartUs;
+			if (bytesRead != bytesThisRound) {
+				entry.readErrors++;
+				benchmarkSetMessage(entry, "Short read while reading benchmark file.");
+				benchmarkFile.close();
+				goto cleanup;
+			}
+
+			const int64_t verifyStartUs = esp_timer_get_time();
+			if (memcmp(readBuffer, writeBuffer, bytesThisRound) != 0) {
+				verifyDurationUs += esp_timer_get_time() - verifyStartUs;
+				entry.verifyErrors++;
+				benchmarkSetMessage(entry, "Verification failed while reading benchmark data.");
+				benchmarkFile.close();
+				goto cleanup;
+			}
+			verifyDurationUs += esp_timer_get_time() - verifyStartUs;
+
+			readBytesTotal += bytesRead;
+			benchmarkReportProgress(config, SdCardBenchmarkPhase::Read, progressBaseBytes + config.sizeBytes + readBytesTotal, progressTotalBytes, frequencyKHz);
+		}
+
+		entry.readDurationMs = benchmarkDurationMs(readDurationUs);
+		entry.verifyDurationMs = benchmarkDurationMs(verifyDurationUs);
+		entry.readSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.readDurationMs);
+		entry.verifiedReadSpeedKiBs = benchmarkRateKiBs(config.sizeBytes, entry.readDurationMs + entry.verifyDurationMs);
+	}
+	benchmarkFile.close();
+
+	entry.success = true;
+	benchmarkSetMessage(entry, "Benchmark completed successfully.");
+	benchmarkOkay = true;
+
+cleanup:
+	if (benchmarkFile) {
+		benchmarkFile.close();
+	}
+	if (gFSystem.exists(benchmarkFilePath) && !gFSystem.remove(benchmarkFilePath)) {
+		cleanupOkay = false;
+		if (benchmarkOkay) {
+			entry.success = false;
+			benchmarkSetMessage(entry, "Benchmark file could not be deleted after the test.");
+		}
+	}
+	free(writeBuffer);
+	free(readBuffer);
+	return benchmarkOkay && cleanupOkay && entry.success;
+}
 } // namespace
 
 void SdCard_Init(void) {
@@ -244,23 +244,23 @@ void SdCard_Init(void) {
 #endif
 
 #ifndef SINGLE_SPI_ENABLE
-#ifdef SD_MMC_1BIT_MODE
-	pinMode(2, INPUT_PULLUP);
+	#ifdef SD_MMC_1BIT_MODE
+		pinMode(2, INPUT_PULLUP);
 	while (!SD_MMC.begin("/sdcard", true)) {
-#else
-	pinMode(SPISD_CS, OUTPUT);
+	#else
+		pinMode(SPISD_CS, OUTPUT);
 	digitalWrite(SPISD_CS, HIGH);
 	spiSD.begin(SPISD_SCK, SPISD_MISO, SPISD_MOSI, SPISD_CS);
 	spiSD.setFrequency(1000000);
 	while (!SD.begin(SPISD_CS, spiSD)) {
-#endif
+	#endif
 #else
-#ifdef SD_MMC_1BIT_MODE
+	#ifdef SD_MMC_1BIT_MODE
 	pinMode(2, INPUT_PULLUP);
 	while (!SD_MMC.begin("/sdcard", true)) {
-#else
+	#else
 	while (!SD.begin(SPISD_CS)) {
-#endif
+	#endif
 #endif
 		Log_Println(unableToMountSd, LOGLEVEL_ERROR);
 		delay(500);
@@ -349,7 +349,7 @@ void SdCard_PrintInfo() {
 }
 
 bool SdCard_RunBenchmark(const SdCardBenchmarkConfig &config, SdCardBenchmarkResult &result) {
-	result = SdCardBenchmarkResult{};
+	result = SdCardBenchmarkResult {};
 
 #ifdef NO_SDCARD
 	benchmarkSetMessage(result, "SD card benchmark is not available.");
@@ -378,7 +378,7 @@ bool SdCard_RunBenchmark(const SdCardBenchmarkConfig &config, SdCardBenchmarkRes
 #ifdef SD_MMC_1BIT_MODE
 		const uint32_t frequencyKHz = runFrequencySweep ? benchmarkSweepFrequenciesKHz[entryIndex] : sdCardDefaultFrequencyKHz;
 		if (!benchmarkSetSdCardFrequency(frequencyKHz, entry.message, sizeof(entry.message))) {
-			entry = SdCardBenchmarkSweepEntry{};
+			entry = SdCardBenchmarkSweepEntry {};
 			entry.frequencyKHz = frequencyKHz;
 			snprintf(entry.message, sizeof(entry.message), "Failed to switch SD card clock to %lu MHz.", frequencyKHz / 1000UL);
 			continue;
